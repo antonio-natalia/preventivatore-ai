@@ -1,0 +1,30 @@
+# --- SICUREZZA (Mai pushare questi file) ---
+.env
+.env.local
+
+# --- DATI E DATABASE ---
+*.db
+*.sqlite
+*.sqlite3
+/db/
+/tmp/
+
+# --- DOCUMENTI CLIENTI E INPUT/OUTPUT ---
+/richieste_ordine/*.xls
+/richieste_ordine/*.xlsx
+/richieste_ordine/*.pdf
+!/richieste_ordine/.gitkeep
+/input_preventivi/
+/preventivi/
+listini/
+
+# --- PYTHON & AMBIENTE ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+*.DS_Store
