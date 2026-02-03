@@ -9,6 +9,7 @@ import sys
 import sqlite_vec
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
+from datetime import datetime
 
 # --- PATH SETUP INTELLIGENTE ---
 # 1. Trova il file .env risalendo le cartelle (così trova la root del progetto)
@@ -32,7 +33,21 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
 FILE_INPUT_RDO = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean.xlsx")
 FILE_STREAM_CSV = os.path.join(PROJECT_ROOT, "tmp", "preventivo_stream_final.csv")
-FILE_FINAL_XLSX = os.path.join(PROJECT_ROOT, "preventivi", "[PREVENTIVO] Sacco Computo CF03.xlsx")
+
+# --- GENERAZIONE NOME OUTPUT DINAMICO ---
+# 1. Recupera nome file originale senza estensione (es. "input_cliente_clean")
+base_name = os.path.splitext(os.path.basename(FILE_INPUT_RDO))[0]
+# 2. Rimuove il suffisso tecnico "_clean" per pulizia (se presente)
+client_filename = base_name.replace("_clean", "").strip()
+# 3. Genera Timestamp (YYYY-MM-DD HH-MM). Nota: Usiamo '-' e non ':' per compatibilità Windows
+timestamp = datetime.now().strftime("%Y-%m-%d %H-%M")
+
+# 4. Costruisce il path finale: "[PREVENTIVO - 2023-10-27 15-30] input_cliente.xlsx"
+FILE_FINAL_XLSX = os.path.join(
+    PROJECT_ROOT, 
+    "preventivi", 
+    f"[PREVENTIVO - {timestamp}] {client_filename}.xlsx"
+)
 
 HEADER_RDO = 0  # Riga di header nel file RDO (0-based)
 COL_RDO_DESC = "DESCRIZIONE"
