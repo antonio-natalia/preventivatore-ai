@@ -7,14 +7,23 @@ import struct
 import time
 import sqlite_vec
 from openai import OpenAI
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-load_dotenv()
+# --- PATH SETUP INTELLIGENTE ---
+dotenv_path = find_dotenv()
+
+if not dotenv_path:
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+else:
+    load_dotenv(dotenv_path)
+    PROJECT_ROOT = os.path.dirname(dotenv_path)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- CONFIGURAZIONE ---
-INPUT_FOLDER = "./data"
-DB_FILE = "./db/preventivatore_v3.db"
+INPUT_FOLDER = os.path.join(PROJECT_ROOT, "data")
+DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v3.db")
 VECTOR_BATCH_SIZE = 200 # Quante ricette processare per volta
 
 # MAPPATURA V5 (STRICT)

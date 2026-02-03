@@ -8,16 +8,31 @@ import time
 import sys
 import sqlite_vec
 from openai import OpenAI
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-load_dotenv()
+# --- PATH SETUP INTELLIGENTE ---
+# 1. Trova il file .env risalendo le cartelle (così trova la root del progetto)
+dotenv_path = find_dotenv()
+
+if not dotenv_path:
+    # Fallback: se non lo trova, usa la cartella dello script
+    print("⚠️ .env non trovato automaticamente. Uso cartella script.")
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+else:
+    # Carica il .env trovato
+    load_dotenv(dotenv_path)
+    # Definisce la ROOT del progetto basandosi su DOVE sta il .env
+    PROJECT_ROOT = os.path.dirname(dotenv_path)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- CONFIGURAZIONE ---
-DB_FILE = "./db/preventivatore_v2_bulk.db"
-FILE_INPUT_RDO = "./richieste_ordine/input_cliente_clean.xlsx"
-FILE_STREAM_CSV = "./tmp/preventivo_stream_final.csv"
-FILE_FINAL_XLSX = "./preventivi/[PREVENTIVO] Sacco Computo CF03.xlsx"
+# Ora usiamo PROJECT_ROOT invece di BASE_DIR locale
+DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
+FILE_INPUT_RDO = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean.xlsx")
+FILE_STREAM_CSV = os.path.join(PROJECT_ROOT, "tmp", "preventivo_stream_final.csv")
+FILE_FINAL_XLSX = os.path.join(PROJECT_ROOT, "preventivi", "[PREVENTIVO] Sacco Computo CF03.xlsx")
 
 HEADER_RDO = 0  # Riga di header nel file RDO (0-based)
 COL_RDO_DESC = "DESCRIZIONE"
