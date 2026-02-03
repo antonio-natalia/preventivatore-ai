@@ -39,7 +39,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS recipes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT, description TEXT,
-        unit_article_price REAL, unit_manpower_price REAL,
+        unit_material_price REAL, unit_manpower_price REAL,
         source_file TEXT
     )''')
     

@@ -22,6 +22,8 @@ FILE_FINAL_XLSX = "./preventivi/[PREVENTIVO] Sacco Computo CF03.xlsx"
 HEADER_RDO = 0  # Riga di header nel file RDO (0-based)
 COL_RDO_DESC = "DESCRIZIONE"
 COL_RDO_QTA = "QUANTITA"
+COL_RDO_PREZZO_UNITARIO = "PREZZO_UNITARIO"
+COL_RDO_PREZZO_MANODOPERA = "PREZZO_MANODOPERA"
 
 # SOGLIE
 THRESHOLD_GREEN = 0.80
@@ -106,9 +108,6 @@ def validate_match_with_gpt(rdo_desc, candidates):
 
     # Auto-confirm se score molto alto
     if candidates[0]['score'] > 0.94:
-        # Nota: Qui NON incrementiamo calls_gpt perché usiamo una scorciatoia, 
-        # ma se volessimo contare l'intenzione di validazione potremmo lasciarlo sopra.
-        # Per precisione sui costi API, decrementiamo se saltiamo la chiamata.
         METRICS["calls_gpt"] -= 1 
         return candidates[0], "MATCH", "High Confidence Vector"
 
@@ -164,10 +163,20 @@ def print_progress(current, total, bar_length=40, status="", last_item=""):
     percent = float(current) * 100 / total
     arrow = '-' * int(percent/100 * bar_length - 1) + '>'
     spaces = ' ' * (bar_length - len(arrow))
-    
-    # Pulisce la riga corrente e stampa la barra
     sys.stdout.write(f"\rProgress: [{arrow}{spaces}] {percent:.1f}% ({current}/{total}) {status}")
     sys.stdout.flush()
+
+def clean_price(val):
+    """Utility per pulire i prezzi RDO in input"""
+    if pd.isna(val): return 0.0
+    try:
+        # Gestione float o stringa
+        return float(val)
+    except:
+        try:
+            return float(str(val).replace(',', '.').strip())
+        except:
+            return 0.0
 
 def process_production():
     print(f"🚀 AVVIO PREVENTIVATORE")
@@ -187,7 +196,8 @@ def process_production():
         "TIPO_RIGA", "CODICE RDO", "DESCRIZIONE RDO", "DESCRIZIONE TROVATA", "SORGENTE", "U.M.", 
         "QUANTITA COMP.", "QUANTITA ART.", "FAB.", 
         "PREZZO COMP.", "PREZZO ART.", "PREZZO MAN.", 
-        "IMPORTO TOT.", 
+        "IMPORTO TOT.", "IMPORTO TOT. MAN.", 
+        "PREZZO ART. RDO", "PREZZO MAN. RDO", "IMPORTO TOTALE RDO",
         "STATO", "CONFIDENZA", "NOTE AI"
     ]
     writer.writerow(cols)
@@ -198,7 +208,6 @@ def process_production():
         raw_desc = row.get(COL_RDO_DESC)
         raw_codice = row.get("CODICE")
         
-        # Filtro righe vuote o non valide
         if pd.isna(raw_codice) or len(str(raw_codice)) < 3: 
             print_progress(i + 1, total_rows, status="Skipped (No Code)")
             continue
@@ -206,6 +215,11 @@ def process_production():
         desc_req = str(raw_desc).strip()
         qta_req = float(row.get(COL_RDO_QTA, 1) or 1)
         
+        # Estrazione Prezzi RDO
+        rdo_p_art = clean_price(row.get(COL_RDO_PREZZO_UNITARIO, 0))
+        rdo_p_man = clean_price(row.get(COL_RDO_PREZZO_MANODOPERA, 0))
+        rdo_imp_tot = rdo_p_art * qta_req
+
         # Logica Core
         candidates = search_pure_vector(desc_req, limit=3)
         match_data, status, note = validate_match_with_gpt(desc_req, candidates)
@@ -217,17 +231,20 @@ def process_production():
         
         score_fmt = f"{match_data['score']:.2f}" if match_data else "0.00"
         
-        # Aggiornamento Barra Progresso
         print_progress(i + 1, total_rows, status=f"-> {status} ({score_fmt})")
 
         if match_data and (status == "MATCH" or status == "WARNING"):
             p_art = match_data['p_art'] or 0
             p_man = match_data['p_man'] or 0
             imp_tot = p_art * qta_req
+            imp_tot_man = p_man * qta_req # Calcolo Importo Totale Manodopera
             
             writer.writerow([
                 "PADRE", raw_codice, raw_desc, match_data['desc'], match_data['source_file'],
-                "CAD", "", qta_req, "", "", p_art, p_man, imp_tot,                      
+                "CAD", "", qta_req, "", 
+                "", p_art, p_man, 
+                imp_tot, imp_tot_man,
+                rdo_p_art, rdo_p_man, rdo_imp_tot,                    
                 status, score_fmt, note       
             ])
             
@@ -236,12 +253,18 @@ def process_production():
                 fab = qta_req * coeff
                 writer.writerow([
                     "FIGLIO", "", "", f"   ↳ {c['description']}", "", "",
-                    str(coeff).replace('.',','), "", fab, c['unit_price'], "", "", "", "", "", ""
+                    str(coeff).replace('.',','), "", fab, c['unit_price'], "", "", 
+                    "", "", # Totali Nostri vuoti
+                    "", "", "", # RDO Empty
+                    "", "", ""
                 ])
         else:
             writer.writerow([
-                "NOMATCH", "", desc_req, "", "", "CAD", "", qta_req, "", "", "", "", 
-                0.0, "NO MATCH", "0.00", note
+                "NOMATCH", "", desc_req, "", "", "CAD", "", qta_req, "", 
+                "", "", "", 
+                0.0, 0.0,
+                rdo_p_art, rdo_p_man, rdo_imp_tot,
+                "NO MATCH", "0.00", note
             ])
             
         f_csv.flush()
@@ -264,34 +287,23 @@ def finalize_excel():
     # 1. Foglio Preventivo
     df.to_excel(writer, sheet_name='Preventivo', index=False)
     
-    # 2. Foglio Riepilogo Metriche (Gestione robusta se METRICS è vuoto in caso di recovery)
-    # Se stiamo recuperando da CSV senza aver girato il processo, le metriche in memoria sono a 0.
-    # Possiamo calcolare alcune metriche base dal DF stesso.
+    # 2. Foglio Riepilogo
     match_count = len(df[df['STATO'] == 'MATCH'])
     warning_count = len(df[df['STATO'] == 'WARNING'])
     nomatch_count = len(df[df['STATO'] == 'NO MATCH'])
     
-    # Se METRICS ha dati reali (dal processo corrente) usiamo quelli, altrimenti stima dal CSV
     metrics_match = METRICS["match"] if METRICS["match"] > 0 else match_count
     metrics_warning = METRICS["warning"] if METRICS["warning"] > 0 else warning_count
     metrics_nomatch = METRICS["no_match"] if METRICS["no_match"] > 0 else nomatch_count
     
     summary_data = {
         "Metrica": [
-            "Totale Voci Processate (Righe CSV)",
-            "MATCH (Verde)", 
-            "WARNING (Giallo)", 
-            "NO MATCH (Rosso)", 
-            "Chiamate API Embeddings", 
-            "Chiamate API GPT-4o"
+            "Totale Voci Processate (Righe CSV)", "MATCH (Verde)", "WARNING (Giallo)", "NO MATCH (Rosso)", 
+            "Chiamate API Embeddings", "Chiamate API GPT-4o"
         ],
         "Valore": [
-            len(df),
-            metrics_match,
-            metrics_warning,
-            metrics_nomatch,
-            METRICS["calls_embeddings"],
-            METRICS["calls_gpt"]
+            len(df), metrics_match, metrics_warning, metrics_nomatch,
+            METRICS["calls_embeddings"], METRICS["calls_gpt"]
         ]
     }
     pd.DataFrame(summary_data).to_excel(writer, sheet_name='Riepilogo', index=False)
@@ -300,44 +312,46 @@ def finalize_excel():
     wb = writer.book
     ws = writer.sheets['Preventivo']
     
-    # DEFINIZIONE FORMATI
     fmt_green  = wb.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'align': 'center', 'bold': True, 'border': 1}) 
     fmt_yellow = wb.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700', 'align': 'center', 'bold': True, 'border': 1}) 
     fmt_red    = wb.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'align': 'center', 'bold': True, 'border': 1}) 
     fmt_child  = wb.add_format({'font_color': '#666666', 'italic': True})
     fmt_money  = wb.add_format({'num_format': '€ #,##0.00'})
     fmt_number = wb.add_format({'num_format': '#.##0,00'})
-    fmt_error_text = wb.add_format({'font_color': '#9C0006'}) # Formato per evidenziare testo RDO in caso di errore
+    fmt_error_text = wb.add_format({'font_color': '#9C0006'})
 
-    idx_stato = 14 # Colonna O (0-based: O è la 14esima lettera? No, O è la 15esima (index 14). A=0, B=1... O=14)
+    # NUOVO INDICE STATO (Slittato di +1 per nuova colonna)
+    # ...
+    # 12: IMP_TOT
+    # 13: IMP_TOT_MAN (Nuova)
+    # 14: P_ART_RDO, 15: P_MAN_RDO, 16: IMP_TOT_RDO
+    # 17: STATO
+    idx_stato = 17 
     
     for i, row in df.iterrows():
         xls_row = i + 1
         stato = str(row['STATO'])
         tipo = str(row['TIPO_RIGA'])
         
-        # Formattazione condizionale righe
         if tipo == 'PADRE':
             if stato == 'MATCH': ws.write(xls_row, idx_stato, stato, fmt_green)
             elif stato == 'WARNING': ws.write(xls_row, idx_stato, stato, fmt_yellow)
             
         elif tipo == 'NOMATCH':
             ws.write(xls_row, idx_stato, stato, fmt_red)
-            # Evidenziamo descrizione RDO
             ws.write(xls_row, 2, row.get('DESCRIZIONE RDO', ''), fmt_error_text)
             
         elif tipo == 'FIGLIO':
             ws.set_row(xls_row, None, fmt_child)
 
-    # Larghezza Colonne
-    ws.set_column('C:F', 60) # Descrizioni larghe
-    ws.set_column('G:I', 12, fmt_number) # Quantità
-    ws.set_column('J:L', 12, fmt_money) # Prezzi
-    ws.set_column('M:M', 15, fmt_money) # Totale
-    ws.set_column('N:N', 15) # Stato
-    ws.set_column('O:P', 25) # Note AI e Confidenza
-    
-    # Stili Riepilogo
+    ws.set_column('C:F', 60)
+    ws.set_column('G:I', 12, fmt_number)
+    ws.set_column('J:L', 12, fmt_money) 
+    ws.set_column('M:N', 15, fmt_money) # Imp Tot + Imp Tot Manodopera
+    ws.set_column('O:Q', 15, fmt_money) # Totali RDO
+    ws.set_column('R:R', 15) # Stato
+    ws.set_column('S:T', 25) # Note
+
     ws_rep = writer.sheets['Riepilogo']
     ws_rep.set_column('A:A', 35)
     ws_rep.set_column('B:B', 20)

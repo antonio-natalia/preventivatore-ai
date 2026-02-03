@@ -83,18 +83,20 @@ def process_file_with_assistant():
     --esempio 2: "Fornitura in opera di Quadro Elettrico di reparto superficie media con degenze e/o ambulatori" 
     - QUANTITA: Numero float. identifica la quantità richiesta per ogni voce
     - UNITA_DI_MISURA: ad esempio "m", "mq", "cad", "kg", "lt", "h", ecc.
+    - PREZZO_UNITARIO: Se presente, estrai il prezzo unitario indicato nella RDO. Se non è presente, lascia vuoto.
+    - PREZZO_MANODOPERA: Se presente, estrai il prezzo della manodopera indicato nella RDO. Se non è presente, lascia vuoto.
     - METADATI: Info di posizione o dettagli non tecnici.
 
     ISTRUZIONI DI DIAGNOSI (PYTHON):
     Analizza la struttura del file. Identifica quale dei 3 pattern logici viene usato e applica la logica corrispondente:
 
     PATTERN A: STRUTTURA "PIATTA" (Riga Singola)
-    - Riconoscimento: Ogni riga ha Codice, Descrizione e Quantità popolate.
+    - Riconoscimento: Ogni riga ha Codice, Descrizione, Quantità e importi popolati.
     - Azione: Estrai i dati direttamente.
 
     PATTERN B: STRUTTURA "A MISURAZIONI" (Stesso Codice ripetuto)
     - Riconoscimento: Lo stesso Codice Articolo si ripete su più righe. Una di esse è solitamente la principale e contiene la descrizione con le specifiche tecniche, le altre possono avere delle misure(es. "lunghezza 5.00") oppure indicare un totale ("Sommano", "Totale").
-    - Azione: Raggruppa per Codice. Descrizione = la descrizione della riga principale oppure l'unione delle descrizione se quelle secondarie contengono specifiche tecniche. Quantità = la riga che esprime il totale oppure somma delle parziali.
+    - Azione: Raggruppa per Codice. Descrizione = la descrizione della riga principale oppure l'unione delle descrizione se quelle secondarie contengono specifiche tecniche. Quantità = la riga che esprime il totale oppure somma delle parziali. Prezzo Unitario e Manodopera = quelli della riga che esprime i totali oppure somma delle parziali.
 
     PATTERN C: STRUTTURA "GERARCHICA / VARIANTI" (Padre-Figlio)
     - Riconoscimento:
@@ -116,7 +118,7 @@ def process_file_with_assistant():
     2. Identifica header e colonne.
     3. Identifica il pattern logico.
     4. Itera sulle righe mantenendo una variabile che indica il dataframe su cui si sta lavorando.
-    - Se trovi una riga con codice indentico vuol dire che è lo stesso articolo -> capisci se la descrizione è rilevante o no e nel caso mergia la descrizione, capisci se si tratta di una riga totale o di misura e aggiorna le quantità.
+    - Se trovi una riga con codice indentico vuol dire che è lo stesso articolo -> capisci se la descrizione è rilevante o no e nel caso mergia la descrizione, capisci se si tratta di una riga totale o di misura e aggiorna le quantità e gli importi.
     - Se trovi una riga con codice diverso -> capisci se sei in presenza di un figlio (codice che inizia con il padre, descrizione breve che aggiunge dettagli tecnici) o di un nuovo articolo.
     -- Se è un figlio -> capisce se la descrizione è autonoma o deve ereditare dal padre, prendi quantità e unità di misura del figlio.
     -- Se è un nuovo articolo -> inizia il nuovo dataframe.

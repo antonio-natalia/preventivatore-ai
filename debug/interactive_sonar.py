@@ -89,6 +89,13 @@ def get_components(recipe_id):
     conn.close()
     return comps
 
+def get_recipes(recipe_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    recipes = conn.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchall()
+    conn.close()
+    return recipes
+
 def check_gpt(query, candidates):
     if not candidates:
         print("\n⚠️  Nessun candidato sopra la soglia. GPT non può essere invocato.")
@@ -159,12 +166,21 @@ def main():
             gpt_choice = input(f"🧠 Vuoi validare i {len(candidates)} candidati validi con GPT? [y/n]: ").lower().strip()
             if gpt_choice == 'y':
                 match = check_gpt(query, candidates)
+                recipes = get_recipes(match['id'])
+                if recipes:
+                    print("\n🔍 Recupero ricetta id: ", match['id'])
+                    for r in recipes:
+                        print(f"\n✅ MATCH TROVATO: {r['code']} - {r['description']}")
+                        print(dict(r))
+                        print(f"   Prezzo Articolo: {r['unit_material_price']} - Prezzo Manodopera{r['unit_manpower_price']}")
+                else:
+                    print("   (Nessuna ricetta trovata per questo match.)")
                 components = get_components(match['id'])
                 if components:
-                    print("\n🔍 Recupero componenti id: ", match['id'])
+                    print("\n🔍 Recupero componenti")
                     for c in components:
                         print(f"\n✅ MATCH TROVATO: {c['code']} - {c['description']}")
-                        print(f"   Prezzo Articolo: {c['unit_material_price']} | Prezzo Manodopera: {c['unit_manpower_price']}")
+                        print(f"   Prezzo Articolo: {c['unit_price']}")
                 else:
                     print("   (Nessun componente trovato per questo match.)")
         else:
