@@ -22,12 +22,12 @@ else:
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- CONFIGURAZIONE ---
-INPUT_FILENAME = "input_cliente.pdf" 
+INPUT_FILENAME = "temp_raw_exctraction.xlsx"
 
 # Costruiamo i percorsi partendo dalla ROOT reale del progetto
-INPUT_FILE = os.path.join(PROJECT_ROOT, "richieste_ordine", INPUT_FILENAME)
-OUTPUT_FILE = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean.xlsx")
-TEMP_RAW_EXCEL = os.path.join(PROJECT_ROOT, "richieste_ordine", "temp_raw_extraction.xlsx")
+INPUT_FILE = os.path.join(PROJECT_ROOT, "richieste_ordine/", INPUT_FILENAME)
+OUTPUT_FILE = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean_new.xlsx")
+TEMP_RAW_EXCEL = os.path.join(PROJECT_ROOT, "richieste_ordine", "temp_raw_extraction_new.xlsx")
 
 # --- 1. PROMPT DIGITIZER (Solo per PDF -> Raw Excel) ---
 # Usiamo gpt-4o-mini qui perché è più veloce ed economico per task meccanici
@@ -105,9 +105,9 @@ PROMPT_NORMALIZER = """
     2. Identifica header e colonne.
     3. Identifica il pattern logico.
     4. Itera sulle righe mantenendo una variabile 'parent' che indica il dataframe su cui si sta lavorando.
-    - Se trovi una riga con codice indentico vuol dire che è lo stesso articolo -> capisci se la descrizione è rilevante o no e nel caso mergia la descrizione con 'parent', capisci se si tratta di una riga totale o di misura e aggiorna le quantità e gli importi di 'parent'.
-    - Se trovi una riga con codice diverso -> capisci se sei in presenza di un figlio (codice che inizia con il padre, oppure codice immediatamente successivo (es: padre A3.1.15, figli A3.1.16 e A3.1.17) con descrizione breve che aggiunge dettagli tecnici) o di un nuovo articolo.
-    -- Se è un figlio -> capisce se la descrizione è autonoma o deve ereditare dal 'parent', prendi quantità, unità di misura e prezzi del figlio.
+    - Se trovi una riga con codice indentico sei nel PATTERN B e vuol dire che è lo stesso articolo -> capisci se la descrizione è rilevante o no e nel caso mergia la descrizione con 'parent', capisci se si tratta di una riga totale o di misura e aggiorna le quantità e gli importi di 'parent'.
+    - Se trovi una riga con codice diverso -> capisci se sei in presenza di un figlio (codice che inizia come il padre, oppure codice immediatamente successivo (es: padre A3.1.15, figli A3.1.16 e A3.1.17) con descrizione breve che aggiunge dettagli tecnici) o di un nuovo articolo.
+    -- Se è un figlio -> sei nel PATTERN C. Capisci se la descrizione è autonoma o deve ereditare dal 'parent', prendi quantità, unità di misura e prezzi del figlio.
     -- Se è un nuovo articolo -> scrivi 'parent' su output e inizia il nuovo dataframe.
     5. Genera il file output 'normalized_quote.xlsx' e rendilo disponibile per il download.
     """
@@ -133,7 +133,7 @@ def extract_wait_time(error_message):
         if match:
             return float(match.group(1))
     except: pass
-    return 10.0 # Default fallback
+    return 60.0 # Default fallback
 
 def run_assistant_task(task_name, file_obj, instructions, model_name, output_filename=None):
     """
@@ -337,7 +337,7 @@ def main_pipeline():
     print("\n🧹 Pulizia risorse temporanee...")
     client.files.delete(excel_obj.id)
     if is_temp_file and os.path.exists(current_file_path):
-        os.remove(current_file_path)
+        #os.remove(current_file_path)
         print(f"   Rimosso file temporaneo: {current_file_path}")
 
     if final_result_path:

@@ -7,74 +7,48 @@ import csv
 import time
 import sys
 import sqlite_vec
+from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
-from datetime import datetime
 
 # --- PATH SETUP INTELLIGENTE ---
-# 1. Trova il file .env risalendo le cartelle (così trova la root del progetto)
 dotenv_path = find_dotenv()
 
 if not dotenv_path:
     # Fallback: se non lo trova, usa la cartella dello script
-    print("⚠️ .env non trovato automaticamente. Uso cartella script.")
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 else:
-    # Carica il .env trovato
+    # Carica il .env trovato e definisce la ROOT
     load_dotenv(dotenv_path)
-    # Definisce la ROOT del progetto basandosi su DOVE sta il .env
     PROJECT_ROOT = os.path.dirname(dotenv_path)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- CONFIGURAZIONE ---
-# Ora usiamo PROJECT_ROOT invece di BASE_DIR locale
 DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
 FILE_INPUT_RDO = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean.xlsx")
-FILE_STREAM_CSV = os.path.join(PROJECT_ROOT, "tmp", "preventivo_stream_final.csv")
 
-# --- GENERAZIONE NOME OUTPUT DINAMICO ---
-# 1. Recupera nome file originale senza estensione (es. "input_cliente_clean")
+# Generazione nome file output dinamico
 base_name = os.path.splitext(os.path.basename(FILE_INPUT_RDO))[0]
-# 2. Rimuove il suffisso tecnico "_clean" per pulizia (se presente)
 client_filename = base_name.replace("_clean", "").strip()
-# 3. Genera Timestamp (YYYY-MM-DD HH-MM). Nota: Usiamo '-' e non ':' per compatibilità Windows
 timestamp = datetime.now().strftime("%Y-%m-%d %H-%M")
-
-# 4. Costruisce il path finale: "[PREVENTIVO - 2023-10-27 15-30] input_cliente.xlsx"
 FILE_FINAL_XLSX = os.path.join(
     PROJECT_ROOT, 
     "preventivi", 
     f"[PREVENTIVO - {timestamp}] {client_filename}.xlsx"
 )
 
-HEADER_RDO = 0  # Riga di header nel file RDO (0-based)
-COL_RDO_DESC = "DESCRIZIONE"
-COL_RDO_QTA = "QUANTITA"
-COL_RDO_PREZZO_UNITARIO = "PREZZO_UNITARIO"
-COL_RDO_PREZZO_MANODOPERA = "PREZZO_MANODOPERA"
+# HEADER RDO (Input)
+HEADER_RDO = ["DESCRIZIONE", "QUANTITA", "UNITA_MISURA"]
 
-# SOGLIE
-THRESHOLD_GREEN = 0.80
-THRESHOLD_YELLOW = 0.6 
+# SOGLIE CONFIGURABILI
+SIMILARITY_THRESHOLD_STRICT = 0.90 
 
-# --- METRICHE GLOBALI ---
-METRICS = {
-    "match": 0,
-    "no_match": 0,
-    "warning": 0,
-    "calls_embeddings": 0,
-    "calls_gpt": 0,
-    "scores": [], # Raccoglie tutti gli score trovati a DB
-    "start_time": 0,
-    "end_time": 0
-}
-
-def serialize_f32(vector):
-    return struct.pack(f"<{len(vector)}f", *vector)
+# --- UTILS DATABASE ---
 
 def get_db_connection():
+    """Connette al DB e carica l'estensione vettoriale."""
     conn = sqlite3.connect(DB_FILE)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
@@ -82,337 +56,284 @@ def get_db_connection():
     return conn
 
 def get_embedding(text):
-    # Incrementa contatore chiamate embeddings
-    METRICS["calls_embeddings"] += 1
-    
-    text = str(text).replace("\n", " ")
+    """Genera embedding usando il modello OpenAI configurato."""
+    text = text.replace("\n", " ").strip()
     return client.embeddings.create(input=[text], model="text-embedding-3-small").data[0].embedding
 
-def search_pure_vector(query_text, limit=3):
+def serialize_f32(vector):
+    """Serializza il vettore per sqlite-vec."""
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+# --- CORE SEARCH & MATCHING ---
+
+def search_similar_candidates(description, limit=5):
+    """
+    Cerca nel DB vettoriale i candidati più simili.
+    Include recupero metriche di volatilità (Smart Pricing).
+    """
     conn = get_db_connection()
-    query_vec = get_embedding(query_text)
-    query_bin = serialize_f32(query_vec)
+    cursor = conn.cursor()
     
+    # 1. Embedding della query
+    query_embedding = get_embedding(description)
+    
+    # 2. Query Vettoriale + Metadati Statistici
+    # Aggiornato per estrarre anche volatility_index e is_complex_assembly
     sql = """
-        SELECT r.id, r.code, r.description, r.unit_material_price, r.unit_manpower_price, r.source_file, v.distance
+        SELECT 
+            r.id, r.code, r.description, 
+            r.unit_material_price, r.unit_manpower_price, 
+            r.source_file, 
+            r.volatility_index, r.is_complex_assembly,
+            v.distance
         FROM vec_recipes v
         JOIN recipes r ON v.rowid = r.id
         WHERE v.embedding MATCH ? AND k = ?
         ORDER BY v.distance ASC
     """
-    rows = conn.execute(sql, (query_bin, limit)).fetchall()
-    conn.close()
     
+    try:
+        results = cursor.execute(sql, (serialize_f32(query_embedding), limit)).fetchall()
+    except Exception as e:
+        print(f"Errore ricerca vettoriale: {e}")
+        conn.close()
+        return []
+
     candidates = []
-    for row in rows:
-        sim = 1 / (1 + row[6])  # Convert distance to similarity
+    for row in results:
+        # Calcolo similarità (1 / 1+distance)
+        similarity = 1 / (1 + row[8]) 
         
-        # Colleziona lo score per le statistiche
-        METRICS["scores"].append(sim)
-        
-        if sim >= THRESHOLD_YELLOW:
-            candidates.append({
-                "id": row[0], 
-                "code": row[1], 
-                "desc": row[2],
-                "p_art": row[3],
-                "p_man": row[4],
-                "source_file": row[5],
-                "score": sim
-            })
+        candidates.append({
+            "id": row[0],
+            "code": row[1],
+            "desc": row[2],
+            "price_mat": row[3],
+            "price_man": row[4],
+            "source_file": row[5],
+            "volatility": row[6] if row[6] is not None else 0.0,   # Campo Nuovo
+            "is_complex": row[7] if row[7] is not None else 0,     # Campo Nuovo
+            "similarity": similarity
+        })
+    
+    conn.close()
     return candidates
 
-def get_components(recipe_id):
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    comps = conn.execute("SELECT * FROM components WHERE recipe_id = ?", (recipe_id,)).fetchall()
-    conn.close()
-    return comps
-
-def validate_match_with_gpt(rdo_desc, candidates):
-    if not candidates:
-        return None, "NO MATCH", "Nessun candidato sopra soglia"
-
-    # Incrementa contatore chiamate GPT (solo se ci sono candidati da valutare)
-    METRICS["calls_gpt"] += 1
-
-    # Auto-confirm se score molto alto
-    if candidates[0]['score'] > 0.94:
-        METRICS["calls_gpt"] -= 1 
-        return candidates[0], "MATCH", "High Confidence Vector"
+def validate_match_with_gpt(rdo_desc, options):
+    """
+    Usa GPT-4o per selezionare il miglior match tecnico con ragionamento CoT.
+    Gestisce normalizzazione unità e analisi funzionale.
+    """
+    if not options:
+        return {"selected_index": 0, "status": "NO MATCH", "reason": "Nessuna opzione fornita"}
 
     options_text = ""
-    for i, c in enumerate(candidates):
-        options_text += f"Opzione {i+1}: {c['desc']} (Score: {c['score']:.2f} | P_ARTICOLO: {c['p_art']}, P_MANODOPERA: {c['p_man']})\n"
+    for idx, opt in enumerate(options):
+        options_text += f"Opzione {idx+1}:\n- Descrizione: {opt['desc']}\n- Prezzo Mat: {opt['price_mat']}\n- ID: {opt['id']}\n\n"
 
+    # PROMPT AGGIORNATO (SMART PRICING V2 - Senior Quantity Surveyor)
     prompt = f"""
-    Sei un Senior Quantity Surveyor ed esperto in computi metrici per impianti MEP (Meccanici, Elettrici, Idraulici).
-
-    IL TUO OBIETTIVO:
-    Ti fornirò una voce di computo (RDO) e una lista di opzioni dal database (DATABASE). Devi identificare la voce del database tecnicamente equivalente o compatibile.
-
+    Sei un Senior Quantity Surveyor ed esperto in computi metrici MEP.
+    
+    OBIETTIVO: Identificare la voce del database tecnicamente equivalente alla RDO.
+    
     INPUT:
     Voce RDO: "{rdo_desc}"
     Opzioni DATABASE:
     {options_text}
-
-    ISTRUZIONI CRITICHE PER IL CONFRONTO:
-
-    1.  **NORMALIZZAZIONE UNITÀ DI MISURA (CRITICO):**
-        Prima di confrontare, converti mentalmente tutte le misure alla stessa unità.
-        - Lunghezza: 120mm = 12cm = 0.12m. Se le dimensioni fisiche coincidono, È UN MATCH.
-        - Potenza: 1000W = 1kW.
-        - Non scartare mai una voce solo perché l'unità di misura è scritta diversamente (es. "3x1.5" vs "3G1,5").
-
-    2.  **ANALISI TECNICA FUNZIONALE:**
-        - Chiediti: "Posso installare l'articolo del database al posto di quello richiesto senza varianti sostanziali?"
-        - Se la risposta è SÌ, seleziona la voce.
-        - Se la descrizione del database è meno dettagliata ma non contraddice la RDO, è un candidato valido (es. RDO specifica il colore, DB no -> MATCH).
-
-    3.  **PRIORITÀ:**
-        - A parità di corrispondenza tecnica, privilegia le voci che hanno un prezzo esplicito (Articolo o Manodopera).
-
+    
+    ISTRUZIONI CRITICHE (NORMALIZZAZIONE & LOGICA):
+    1. NORMALIZZAZIONE UNITÀ: Converti sempre mentalmente le unità (es. 120mm = 12cm = 0.12m). Se le dimensioni fisiche coincidono, È UN MATCH.
+    2. TOLLERANZA SINTATTICA: "3x1.5" equivale a "3G1,5" (G = Giallo/Verde).
+    3. ANALISI FUNZIONALE: Chiediti "Posso installare l'articolo del DB al posto di quello richiesto senza varianti sostanziali?".
+    
     OUTPUT JSON:
     Rispondi esclusivamente con questo formato JSON:
     {{
-    "selected_index": [numero intero dell'opzione scelta, 1-based. Metti 0 se nessuna corrisponde],
-    "status": "OK" | "CHECK" | "NO MATCH",
-    "reason": "Spiegazione sintetica. SE status è OK/CHECK, devi esplicitare le conversioni fatte (es. 'Trovato 120mm che corrisponde ai 12cm richiesti')."
+      "selected_index": [numero intero 1-based, o 0 se nessun match valido],
+      "status": "OK" | "CHECK" | "NO MATCH",
+      "reason": "Spiegazione sintetica. DEVI esplicitare le conversioni fatte (es. 'Trovato 120mm che corrisponde ai 12cm richiesti')."
     }}
-
-    DEFINIZIONE STATUS:
-    - "OK": Corrispondenza tecnica perfetta o equivalenza matematica verificata (es. cm vs mm).
-    - "CHECK": L'articolo è funzionalmente adatto ma differisce per dettagli minori (es. marca diversa, caratteristiche accessorie non specificate).
-    - "NO MATCH": Differenze sostanziali di tipo, potenza, dimensioni fisiche reali (non di unità) o tecnologia.
     """
-    
+
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+        response = client.chat.completions.create(
+            model="gpt-4o", 
+            messages=[
+                {"role": "system", "content": "Sei un assistente JSON rigoroso."},
+                {"role": "user", "content": prompt}
+            ],
             response_format={"type": "json_object"},
             temperature=0
         )
-        content = json.loads(res.choices[0].message.content)
-        idx = content.get("selected_index", -1)
-        gpt_status = content.get("status", "OK")
-        reason = content.get("reason", "")
         
-        if idx > 0 and idx <= len(candidates):
-            chosen = candidates[idx-1]
-            if gpt_status == "OK":
-                return chosen, "MATCH", f"OK: {reason}"
-            if gpt_status == "CHECK":
-                return chosen, "WARNING", f"Voce Da Verificare: {reason}"
+        content = response.choices[0].message.content
+        result = json.loads(content)
+        return result
+        
+    except Exception as e:
+        print(f"Errore GPT: {e}")
+        return {"selected_index": 0, "status": "ERROR", "reason": str(e)}
+
+def get_recipe_details(recipe_id):
+    """Ottiene dettagli ricetta e componenti per l'output finale."""
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    
+    recipe = cur.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,)).fetchall()
+    components = cur.execute("SELECT * FROM components WHERE recipe_id = ?", (recipe_id,)).fetchall()
+    
+    conn.close()
+    return recipe, components
+
+# --- MAIN ENGINE ---
+
+def main():
+    print("🚀 AVVIO GENERATORE PREVENTIVI (SMART PRICING ENABLED)...")
+    print(f"📂 Input: {FILE_INPUT_RDO}")
+    print(f"💾 Output: {FILE_FINAL_XLSX}")
+
+    if not os.path.exists(FILE_INPUT_RDO):
+        print("❌ File di input non trovato!")
+        return
+
+    # Lettura Excel Input
+    try:
+        df_input = pd.read_excel(FILE_INPUT_RDO)
+    except Exception as e:
+        print(f"❌ Errore lettura Excel: {e}")
+        return
+        
+    # Verifica colonne minime
+    if not all(col in df_input.columns for col in HEADER_RDO):
+        print(f"❌ Colonne mancanti! Richieste: {HEADER_RDO}")
+        return
+
+    # Inizializzazione Excel Writer (XlsxWriter per formattazione avanzata)
+    import xlsxwriter
+    workbook = xlsxwriter.Workbook(FILE_FINAL_XLSX)
+    worksheet = workbook.add_worksheet("Preventivo")
+
+    # Formattazioni Excel
+    cell_format_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
+    cell_format_currency = workbook.add_format({'num_format': '€ #,##0.00', 'border': 1})
+    cell_format_text = workbook.add_format({'border': 1, 'text_wrap': True})
+    cell_format_status_ok = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'bold': True})
+    cell_format_status_check = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700', 'border': 1, 'bold': True})
+    cell_format_status_no_match = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'bold': True})
+    
+    # Headers Output
+    headers = ["DESCRIZIONE RDO", "QTA", "UM", "DESCRIZIONE DB", "PREZZO MAT", "PREZZO MAN", "TOTALE", "STATO", "NOTE AI"]
+    for col_num, header in enumerate(headers):
+        worksheet.write(0, col_num, header, cell_format_header)
+    
+    # Imposta larghezza colonne
+    worksheet.set_column('A:A', 50) # Desc RDO
+    worksheet.set_column('D:D', 50) # Desc DB
+    worksheet.set_column('E:G', 15) # Prezzi
+    worksheet.set_column('I:I', 40) # Note
+
+    row_num = 1
+    total_quote = 0.0
+
+    # --- LOOP RIGHE ---
+    for index, row in df_input.iterrows():
+        rdo_desc = str(row['DESCRIZIONE']).strip()
+        rdo_qty = float(row['QUANTITA']) if pd.notna(row['QUANTITA']) else 0.0
+        rdo_um = str(row['UNITA_MISURA']) if pd.notna(row['UNITA_MISURA']) else ""
+        
+        print(f"\n🔹 Processing Riga {index+1}: {rdo_desc[:50]}...")
+
+        # 1. Ricerca Candidati
+        candidates = search_similar_candidates(rdo_desc, limit=5)
+        
+        # 2. Validazione GPT
+        best_match = None
+        validation_result = {}
+        
+        if candidates:
+            # Filtro preliminare di sicurezza (se il primo è > 99% simile, saltiamo GPT per risparmiare, opzionale)
+            if candidates[0]['similarity'] > SIMILARITY_THRESHOLD_STRICT:
+                best_match = candidates[0]
+                validation_result = {"status": "OK", "reason": "Match vettoriale esatto (>99%)"}
             else:
-                return chosen, "NO MATCH", f"Scartata: {reason}"
+                validation_result = validate_match_with_gpt(rdo_desc, candidates)
+                sel_idx = validation_result.get("selected_index", 0)
+                
+                if sel_idx > 0 and sel_idx <= len(candidates):
+                    best_match = candidates[sel_idx - 1]
+        
+        # 3. Determinazione Dati Finali (Smart Pricing Logic)
+        final_mat = 0.0
+        final_man = 0.0
+        db_desc = ""
+        status = "NO MATCH"
+        ai_note = ""
+
+        if best_match:
+            # Controllo Safety Mechanism (Volatilità)
+            is_complex = best_match.get('is_complex', 0)
+            volatility = best_match.get('volatility', 0.0)
+
+            if is_complex:
+                # CASO 1: ALTA VOLATILITÀ -> MANUAL
+                final_mat = 0.00
+                final_man = 0.00
+                status = "MANUAL_ESTIMATION"
+                ai_note = f"⚠️ ALTA VOLATILITÀ (CV: {volatility:.2f}). Richiede stima manuale specifica."
+                db_desc = best_match['desc']
+                print(f"   -> ⚠️  MANUAL CHECK (Volatilità {volatility:.2f})")
+            
+            else:
+                # CASO 2: MATCH VALIDO
+                final_mat = best_match['price_mat'] or 0.0
+                final_man = best_match['price_man'] or 0.0
+                db_desc = best_match['desc']
+                
+                # Mapping status GPT -> Status Excel
+                gpt_status = validation_result.get("status", "CHECK")
+                if gpt_status == "OK": status = "MATCH"
+                elif gpt_status == "CHECK": status = "CHECK"
+                else: status = "NO MATCH" # Fallback
+                
+                ai_note = validation_result.get("reason", "")
+                print(f"   -> ✅ MATCH: {db_desc[:40]}... (€ {final_mat:.2f})")
         else:
-            if candidates[0]['score'] >= 0.85:
-                 return candidates[0], "WARNING", f"GPT Rejected but High Vector: {reason}"
-            return None, "NO MATCH", f"GPT Rejected: {reason}"
+            ai_note = validation_result.get("reason", "Nessun candidato trovato")
+            print("   -> ❌ NO MATCH")
 
-    except:
-        return candidates[0], "WARNING", "GPT Error"
+        # 4. Calcoli Totali
+        line_total = (final_mat + final_man) * rdo_qty
+        if status in ["MATCH", "CHECK"]: 
+            total_quote += line_total
 
-def print_progress(current, total, bar_length=40, status="", last_item=""):
-    percent = float(current) * 100 / total
-    arrow = '-' * int(percent/100 * bar_length - 1) + '>'
-    spaces = ' ' * (bar_length - len(arrow))
-    sys.stdout.write(f"\rProgress: [{arrow}{spaces}] {percent:.1f}% ({current}/{total}) {status}")
-    sys.stdout.flush()
-
-def clean_price(val):
-    """Utility per pulire i prezzi RDO in input"""
-    if pd.isna(val): return 0.0
-    try:
-        # Gestione float o stringa
-        return float(val)
-    except:
-        try:
-            return float(str(val).replace(',', '.').strip())
-        except:
-            return 0.0
-
-def process_production():
-    print(f"🚀 AVVIO PREVENTIVATORE")
-    METRICS["start_time"] = time.time()
-    
-    try:
-        df_rdo = pd.read_excel(FILE_INPUT_RDO, header=HEADER_RDO)
-        df_rdo.columns = [str(c).strip() for c in df_rdo.columns]
-    except: 
-        print(f"❌ ERRORE: Impossibile leggere il file RDO: {FILE_INPUT_RDO}")
-        return
-
-    f_csv = open(FILE_STREAM_CSV, 'w', newline='', encoding='utf-8')
-    writer = csv.writer(f_csv, delimiter=';')
-    
-    cols = [
-        "TIPO_RIGA", "CODICE RDO", "DESCRIZIONE RDO", "DESCRIZIONE TROVATA", "SORGENTE", "U.M.", 
-        "QUANTITA COMP.", "QUANTITA ART.", "FAB.", 
-        "PREZZO COMP.", "PREZZO ART.", "PREZZO MAN.", 
-        "IMPORTO TOT.", "IMPORTO TOT. MAN.", 
-        "PREZZO ART. RDO", "PREZZO MAN. RDO", "IMPORTO TOTALE RDO",
-        "STATO", "CONFIDENZA", "NOTE AI"
-    ]
-    writer.writerow(cols)
-    
-    total_rows = len(df_rdo)
-    
-    for i, row in df_rdo.iterrows():
-        raw_desc = row.get(COL_RDO_DESC)
-        raw_codice = row.get("CODICE")
+        # 5. Scrittura Excel
+        worksheet.write(row_num, 0, rdo_desc, cell_format_text)
+        worksheet.write(row_num, 1, rdo_qty, cell_format_text)
+        worksheet.write(row_num, 2, rdo_um, cell_format_text)
+        worksheet.write(row_num, 3, db_desc, cell_format_text)
+        worksheet.write(row_num, 4, final_mat, cell_format_currency)
+        worksheet.write(row_num, 5, final_man, cell_format_currency)
+        worksheet.write(row_num, 6, line_total, cell_format_currency)
         
-        if pd.isna(raw_codice) or len(str(raw_codice)) < 3: 
-            print_progress(i + 1, total_rows, status="Skipped (No Code)")
-            continue
+        # Formattazione condizionale Stato
+        fmt_status = cell_format_status_no_match
+        if status == "MATCH": fmt_status = cell_format_status_ok
+        elif status in ["CHECK", "MANUAL_ESTIMATION"]: fmt_status = cell_format_status_check
         
-        desc_req = str(raw_desc).strip()
-        qta_req = float(row.get(COL_RDO_QTA, 1) or 1)
+        worksheet.write(row_num, 7, status, fmt_status)
+        worksheet.write(row_num, 8, ai_note, cell_format_text)
         
-        # Estrazione Prezzi RDO
-        rdo_p_art = clean_price(row.get(COL_RDO_PREZZO_UNITARIO, 0))
-        rdo_p_man = clean_price(row.get(COL_RDO_PREZZO_MANODOPERA, 0))
-        rdo_imp_tot = rdo_p_art * qta_req
+        row_num += 1
 
-        # Logica Core
-        candidates = search_pure_vector(desc_req, limit=3)
-        match_data, status, note = validate_match_with_gpt(desc_req, candidates)
-        
-        # Aggiornamento Metriche
-        if status == "MATCH": METRICS["match"] += 1
-        elif status == "WARNING": METRICS["warning"] += 1
-        else: METRICS["no_match"] += 1
-        
-        score_fmt = f"{match_data['score']:.2f}" if match_data else "0.00"
-        
-        print_progress(i + 1, total_rows, status=f"-> {status} ({score_fmt})")
+    # Footer Totali
+    row_num += 1
+    worksheet.write(row_num, 5, "TOTALE STIMATO", cell_format_header)
+    worksheet.write(row_num, 6, total_quote, cell_format_currency)
 
-        if match_data and (status == "MATCH" or status == "WARNING"):
-            p_art = match_data['p_art'] or 0
-            p_man = match_data['p_man'] or 0
-            imp_tot = p_art * qta_req
-            imp_tot_man = p_man * qta_req # Calcolo Importo Totale Manodopera
-            
-            writer.writerow([
-                "PADRE", raw_codice, raw_desc, match_data['desc'], match_data['source_file'],
-                "CAD", "", qta_req, "", 
-                "", p_art, p_man, 
-                imp_tot, imp_tot_man,
-                rdo_p_art, rdo_p_man, rdo_imp_tot,                    
-                status, score_fmt, note       
-            ])
-            
-            for c in get_components(match_data['id']):
-                coeff = c['qty_coefficient'] or 0
-                fab = qta_req * coeff
-                writer.writerow([
-                    "FIGLIO", "", "", f"   ↳ {c['description']}", "", "",
-                    str(coeff).replace('.',','), "", fab, c['unit_price'], "", "", 
-                    "", "", # Totali Nostri vuoti
-                    "", "", "", # RDO Empty
-                    "", "", ""
-                ])
-        else:
-            writer.writerow([
-                "NOMATCH", "", desc_req, "", "", "CAD", "", qta_req, "", 
-                "", "", "", 
-                0.0, 0.0,
-                rdo_p_art, rdo_p_man, rdo_imp_tot,
-                "NO MATCH", "0.00", note
-            ])
-            
-        f_csv.flush()
-
-    f_csv.close()
-    METRICS["end_time"] = time.time()
-    finalize_excel()
-
-def finalize_excel():
-    print(f"\n\n🎨 Generazione Excel Finale (Style: Minimal)...")
-    try:
-        df = pd.read_csv(FILE_STREAM_CSV, sep=';', encoding='utf-8')
-        df = df.fillna("") 
-    except Exception as e: 
-        print(f"❌ Errore lettura CSV per finalizzazione: {e}")
-        return
-
-    writer = pd.ExcelWriter(FILE_FINAL_XLSX, engine='xlsxwriter')
-    
-    # 1. Foglio Preventivo
-    df.to_excel(writer, sheet_name='Preventivo', index=False)
-    
-    # 2. Foglio Riepilogo
-    match_count = len(df[df['STATO'] == 'MATCH'])
-    warning_count = len(df[df['STATO'] == 'WARNING'])
-    nomatch_count = len(df[df['STATO'] == 'NO MATCH'])
-    
-    metrics_match = METRICS["match"] if METRICS["match"] > 0 else match_count
-    metrics_warning = METRICS["warning"] if METRICS["warning"] > 0 else warning_count
-    metrics_nomatch = METRICS["no_match"] if METRICS["no_match"] > 0 else nomatch_count
-    
-    summary_data = {
-        "Metrica": [
-            "Totale Voci Processate (Righe CSV)", "MATCH (Verde)", "WARNING (Giallo)", "NO MATCH (Rosso)", 
-            "Chiamate API Embeddings", "Chiamate API GPT-4o"
-        ],
-        "Valore": [
-            len(df), metrics_match, metrics_warning, metrics_nomatch,
-            METRICS["calls_embeddings"], METRICS["calls_gpt"]
-        ]
-    }
-    pd.DataFrame(summary_data).to_excel(writer, sheet_name='Riepilogo', index=False)
-
-    # --- FORMATTAZIONE ---
-    wb = writer.book
-    ws = writer.sheets['Preventivo']
-    
-    fmt_green  = wb.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'align': 'center', 'bold': True, 'border': 1}) 
-    fmt_yellow = wb.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700', 'align': 'center', 'bold': True, 'border': 1}) 
-    fmt_red    = wb.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'align': 'center', 'bold': True, 'border': 1}) 
-    fmt_child  = wb.add_format({'font_color': '#666666', 'italic': True})
-    fmt_money  = wb.add_format({'num_format': '€ #,##0.00'})
-    fmt_number = wb.add_format({'num_format': '#.##0,00'})
-    fmt_error_text = wb.add_format({'font_color': '#9C0006'})
-
-    # NUOVO INDICE STATO (Slittato di +1 per nuova colonna)
-    # ...
-    # 12: IMP_TOT
-    # 13: IMP_TOT_MAN (Nuova)
-    # 14: P_ART_RDO, 15: P_MAN_RDO, 16: IMP_TOT_RDO
-    # 17: STATO
-    idx_stato = 17 
-    
-    for i, row in df.iterrows():
-        xls_row = i + 1
-        stato = str(row['STATO'])
-        tipo = str(row['TIPO_RIGA'])
-        
-        if tipo == 'PADRE':
-            if stato == 'MATCH': ws.write(xls_row, idx_stato, stato, fmt_green)
-            elif stato == 'WARNING': ws.write(xls_row, idx_stato, stato, fmt_yellow)
-            
-        elif tipo == 'NOMATCH':
-            ws.write(xls_row, idx_stato, stato, fmt_red)
-            ws.write(xls_row, 2, row.get('DESCRIZIONE RDO', ''), fmt_error_text)
-            
-        elif tipo == 'FIGLIO':
-            ws.set_row(xls_row, None, fmt_child)
-
-    ws.set_column('C:F', 60)
-    ws.set_column('G:I', 12, fmt_number)
-    ws.set_column('J:L', 12, fmt_money) 
-    ws.set_column('M:N', 15, fmt_money) # Imp Tot + Imp Tot Manodopera
-    ws.set_column('O:Q', 15, fmt_money) # Totali RDO
-    ws.set_column('R:R', 15) # Stato
-    ws.set_column('S:T', 25) # Note
-
-    ws_rep = writer.sheets['Riepilogo']
-    ws_rep.set_column('A:A', 35)
-    ws_rep.set_column('B:B', 20)
-
-    writer.close()
-    print(f"🏆 File salvato: {FILE_FINAL_XLSX}")
+    workbook.close()
+    print(f"\n✅ Preventivo generato con successo: {FILE_FINAL_XLSX}")
 
 if __name__ == "__main__":
-    process_production()
+    main()

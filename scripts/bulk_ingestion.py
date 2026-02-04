@@ -2,16 +2,18 @@ import pandas as pd
 import sqlite3
 import os
 import glob
-import hashlib
 import struct
 import time
+import json
+import numpy as np
+import argparse
 import sqlite_vec
+from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 
-# --- PATH SETUP INTELLIGENTE ---
+# --- SETUP ---
 dotenv_path = find_dotenv()
-
 if not dotenv_path:
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
@@ -21,307 +23,340 @@ else:
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --- CONFIGURAZIONE ---
+# CONFIGURAZIONE
 INPUT_FOLDER = os.path.join(PROJECT_ROOT, "data")
-DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v3.db")
-VECTOR_BATCH_SIZE = 200 # Quante ricette processare per volta
+DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
+VECTOR_BATCH_SIZE = 200
 
-# MAPPATURA V5 (STRICT)
+# SOGLIE SMART PRICING ADATTIVO
+SIMILARITY_MERGE = 0.98  
+SIMILARITY_JUDGE = 0.92  
+VOLATILITY_THRESHOLD = 0.5
+DEVIATION_THRESHOLD = 0.20 # 20% di variazione fa scattare il trigger
+STALENESS_DAYS = 180       # 6 mesi di buco fanno scattare il trigger
+
+# GLOBALS (Configurabili da args)
+PRICING_MODE = "SMART_ADAPTIVE" # Options: SMART_ADAPTIVE, MAX, LATEST, SMART_1Y
+
+# MAPPATURA V5 STRICT (O Formato Cliente)
 IDX = {
-    "ARTICOLO": 0, "DESCRIZIONE": 1, "UM": 2,
-    "Q_COMP": 3, "Q_ART": 4, "Q_MAN": 5,
-    "P_COMP": 8, "P_ART": 9, "P_MAN": 10,
-    "IMPORTO_TOT": 14
+    "ARTICOLO": 0, "DESCRIZIONE": 1, "UM": 2, "Q_COMP": 3,
+    "Q_ART": 4, "Q_MAN": 5, "P_COMP": 8, "P_ART": 9,
+    "P_MAN": 10, "IMPORTO_TOT": 14
 }
 
 def serialize_f32(vector):
     return struct.pack(f"<{len(vector)}f", *vector)
 
-# --- UTILS DATABASE ---
+def get_embedding_single(text):
+    text = str(text).replace("\n", " ").strip()
+    return client.embeddings.create(input=[text], model="text-embedding-3-small").data[0].embedding
 
-def init_db():  
-    print(f"🔧 SYSTEM CHECK: Verifica integrità schema su {DB_FILE}...")
+def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # Tabelle Dati
-    c.execute('''CREATE TABLE IF NOT EXISTS recipes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT, description TEXT,
-        unit_material_price REAL, unit_manpower_price REAL,
-        source_file TEXT
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS components (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, recipe_id INTEGER,
-        code TEXT, description TEXT, type TEXT, qty_coefficient REAL, unit_price REAL,
-        FOREIGN KEY(recipe_id) REFERENCES recipes(id)
-    )''')
-
-    # Tabella Tracking File (Idempotenza)
-    c.execute('''CREATE TABLE IF NOT EXISTS ingested_files (
-        filename TEXT PRIMARY KEY,
-        file_hash TEXT,
-        import_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        status TEXT, -- 'SUCCESS', 'ERROR', 'SKIPPED'
-        recipes_count INTEGER
-    )''')
-    
-    # Caricamento Estensione e Tabella Vettori
     try:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
-        c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_recipes USING vec0(embedding float[1536])")
-    except Exception as e:
-        print(f"❌ ERRORE CRITICO sqlite-vec: {e}")
-        exit()
-        
-    conn.commit()
-    conn.close()
-    print("✅ Schema integro. Pronto per l'ingestion.")
+    except: pass
+    return conn
 
-def get_file_hash(filepath):
-    hasher = hashlib.md5()
+def judge_similarity(new_desc, existing_desc):
+    """LLM Judge per decidere Merge vs Branch."""
+    if new_desc.lower() == existing_desc.lower():
+        return True, "Identical String"
+    
+    prompt = f"""
+    Sei un Senior Engineer MEP.
+    Voce A (Database): "{existing_desc}"
+    Voce B (Nuova): "{new_desc}"
+    
+    La Voce B è funzionalmente equivalente alla Voce A (es. stessa funzione, installazione simile) 
+    tanto da poter unire i loro storici prezzi? 
+    Se cambia solo la marca o un dettaglio minore, rispondi TRUE.
+    Se cambia la natura tecnica o la complessità, rispondi FALSE.
+    
+    Rispondi JSON: {{ "is_merge": true/false, "reason": "..." }}
+    """
     try:
-        with open(filepath, 'rb') as f:
-            # Leggiamo a chunk anche il file per non saturare la RAM su file enormi
-            for chunk in iter(lambda: f.read(4096), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
-    except Exception:
-        return None
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0
+        )
+        data = json.loads(res.choices[0].message.content)
+        return data.get("is_merge", False), data.get("reason", "")
+    except:
+        return False, "Error"
 
-def check_file_status(filename, file_hash):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.execute("SELECT file_hash, status FROM ingested_files WHERE filename = ?", (filename,))
-    row = cur.fetchone()
-    conn.close()
-    
+def find_semantic_match(desc, conn):
+    vec = get_embedding_single(desc)
+    bin_vec = serialize_f32(vec)
+    row = conn.execute("""
+        SELECT r.id, r.description, v.distance
+        FROM vec_recipes v
+        JOIN recipes r ON v.rowid = r.id
+        WHERE v.embedding MATCH ? AND k = 1
+        ORDER BY v.distance ASC
+    """, (bin_vec,)).fetchone()
     if row:
-        stored_hash, status = row
-        if stored_hash == file_hash and status == 'SUCCESS':
-            return "SKIP" # Già fatto e non cambiato
-        if stored_hash != file_hash:
-            return "UPDATE" # Esiste ma cambiato
-    return "NEW"
+        return row[0], row[1], 1 / (1 + row[2])
+    return None, None, 0.0
 
-def log_ingestion_result(filename, file_hash, status, count=0):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
-        INSERT INTO ingested_files (filename, file_hash, status, recipes_count, import_date)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(filename) DO UPDATE SET
-            file_hash=excluded.file_hash,
-            status=excluded.status,
-            recipes_count=excluded.recipes_count,
-            import_date=CURRENT_TIMESTAMP
-    """, (filename, file_hash, status, count))
+# --- CORE PRICING ENGINE ---
+
+def calculate_smart_adaptive_price(history, now):
+    """
+    Implementa le regole di Smart Pricing Adattivo:
+    1. Deviazione Significativa -> Peso alto all'ultimo prezzo.
+    2. Dato Vecchio -> Peso alto all'ultimo prezzo.
+    3. Altrimenti -> Media pesata temporale standard.
+    """
+    if not history: return 0.0
+    
+    # Ordina per data decrescente (più recente prima)
+    # history item: (price, date_obj)
+    sorted_hist = sorted(history, key=lambda x: x[1], reverse=True)
+    
+    latest_price, latest_date = sorted_hist[0]
+    
+    if len(sorted_hist) == 1:
+        return latest_price
+
+    # Calcolo media storica "Reference" (escluso l'ultimo dato)
+    # Usiamo pesi temporali standard per il reference
+    ref_w_sum = 0.0
+    ref_p_sum = 0.0
+    
+    rest_hist = sorted_hist[1:]
+    latest_prev_date = rest_hist[0][1] # Data del penultimo aggiornamento
+    
+    for price, date_obj in rest_hist:
+        days = (now - date_obj).days
+        w = 1.0 if days <= 365 else (0.5 if days <= 730 else 0.1)
+        ref_p_sum += price * w
+        ref_w_sum += w
+        
+    ref_avg = ref_p_sum / ref_w_sum if ref_w_sum > 0 else 0.0
+    
+    # --- CHECK TRIGGERS ---
+    
+    # Trigger 1: Deviazione Significativa
+    deviation = abs(latest_price - ref_avg) / ref_avg if ref_avg > 0 else 0.0
+    is_significant_deviation = deviation > DEVIATION_THRESHOLD
+    
+    # Trigger 2: Staleness (Tempo passato dall'ultimo aggiornamento)
+    gap_days = (latest_date - latest_prev_date).days
+    is_stale = gap_days > STALENESS_DAYS
+    
+    if is_significant_deviation or is_stale:
+        # "Vicino a quest'ultimo" -> Peso dominante (es. 90%)
+        # Formula: 0.9 * Latest + 0.1 * Reference
+        final_price = (0.9 * latest_price) + (0.1 * ref_avg)
+    else:
+        # "Mantenere media nell'intorno ultimo aggiornamento" -> Standard Time Weighted
+        # Ricalcoliamo includendo latest con il suo peso naturale (che sarà alto essendo recente)
+        all_w_sum = 0.0
+        all_p_sum = 0.0
+        for price, date_obj in sorted_hist:
+            days = (now - date_obj).days
+            w = 1.0 if days <= 365 else (0.5 if days <= 730 else 0.1)
+            all_p_sum += price * w
+            all_w_sum += w
+        final_price = all_p_sum / all_w_sum
+        
+    return final_price
+
+def recalc_recipe_stats(recipe_id, conn):
+    """
+    Ricalcola i prezzi in base alla PRICING_MODE selezionata.
+    """
+    comps = conn.execute("SELECT id, qty_coefficient, type FROM components WHERE recipe_id=?", (recipe_id,)).fetchall()
+    recipe_total = 0.0
+    all_prices_for_volatility = []
+
+    for cid, qty, ctype in comps:
+        # Fetch history raw
+        rows = conn.execute("SELECT raw_price, date FROM price_history WHERE component_id=?", (cid,)).fetchall()
+        if not rows: continue
+        
+        # Parse Dates
+        history = []
+        now = datetime.now()
+        for r_price, r_date_str in rows:
+            try: d = datetime.strptime(str(r_date_str), "%Y-%m-%d %H:%M:%S")
+            except: d = now
+            history.append((r_price, d))
+            
+        # --- APPLICAZIONE STRATEGIA ---
+        new_unit_price = 0.0
+        
+        if PRICING_MODE == "MAX":
+            new_unit_price = max([h[0] for h in history])
+            
+        elif PRICING_MODE == "LATEST":
+            # Sort by date desc, take first
+            history.sort(key=lambda x: x[1], reverse=True)
+            new_unit_price = history[0][0]
+            
+        elif PRICING_MODE == "SMART_1Y":
+            # Filter last 1 year, then weighted avg
+            one_year_ago = now - timedelta(days=365)
+            filtered = [h for h in history if h[1] >= one_year_ago]
+            if not filtered: # Fallback a latest se vuoto
+                filtered = sorted(history, key=lambda x: x[1], reverse=True)[:1]
+            
+            # Simple average of filtered (or weighted, but sticking to simple for "SMART_1Y" usually implies focus on recency)
+            # Let's use weighted standard on the subset
+            w_sum = 0; p_sum = 0
+            for p, d in filtered:
+                w = 1.0
+                p_sum += p * w; w_sum += w
+            new_unit_price = p_sum / w_sum
+            
+        else: # DEFAULT: SMART_ADAPTIVE
+            new_unit_price = calculate_smart_adaptive_price(history, now)
+
+        # Update Cache
+        conn.execute("UPDATE components SET unit_price=?, last_calculated_at=CURRENT_TIMESTAMP WHERE id=?", (new_unit_price, cid))
+        
+        if ctype != 'MAN':
+            recipe_total += new_unit_price * qty
+            # Per volatilità usiamo tutto lo storico raw
+            all_prices_for_volatility.extend([h[0] * qty for h in history])
+
+    # 2. Volatilità (Sempre calcolata su tutto lo storico per sicurezza)
+    if len(all_prices_for_volatility) > 1:
+        cv = np.std(all_prices_for_volatility) / np.mean(all_prices_for_volatility) if np.mean(all_prices_for_volatility) > 0 else 0.0
+    else:
+        cv = 0.0
+        
+    is_complex = 1 if cv > VOLATILITY_THRESHOLD else 0
+    conn.execute("UPDATE recipes SET unit_material_price=?, volatility_index=?, is_complex_assembly=?, last_price_date=CURRENT_TIMESTAMP WHERE id=?", 
+                 (recipe_total, cv, is_complex, recipe_id))
+
+# --- INGESTION FLOW ---
+
+def insert_new_recipe(conn, data, filename):
+    cur = conn.execute("INSERT INTO recipes (code, description, source_file) VALUES (?,?,?)",
+                       (data["code"], data["desc"], filename))
+    rid = cur.lastrowid
+    for c in data["components"]:
+        cur_c = conn.execute("INSERT INTO components (recipe_id, description, type, qty_coefficient, unit_price) VALUES (?,?,?,?,0)",
+                             (rid, c['desc'], c['type'], c['qty']))
+        conn.execute("INSERT INTO price_history (component_id, raw_price, source_file) VALUES (?,?,?)",
+                     (cur_c.lastrowid, c['price'], filename))
+    return rid
+
+def merge_into_recipe(conn, rid, data, filename):
+    existing_comps = conn.execute("SELECT id, description FROM components WHERE recipe_id=?", (rid,)).fetchall()
+    for new_c in data["components"]:
+        target_cid = None
+        for ecid, edesc in existing_comps:
+            if new_c['desc'] in edesc or edesc in new_c['desc']:
+                target_cid = ecid
+                break
+        if not target_cid:
+            cur_c = conn.execute("INSERT INTO components (recipe_id, description, type, qty_coefficient, unit_price) VALUES (?,?,?,?,0)",
+                                 (rid, new_c['desc'], new_c['type'], new_c['qty']))
+            target_cid = cur_c.lastrowid
+        conn.execute("INSERT INTO price_history (component_id, raw_price, source_file) VALUES (?,?,?)",
+                     (target_cid, new_c['price'], filename))
+
+def process_file(filepath):
+    df = pd.read_excel(filepath, header=None, dtype=str)
+    filename = os.path.basename(filepath)
+    conn = get_db_connection()
+    
+    curr = None
+    foot_hits = 0
+    stats = {"branch": 0, "merge": 0}
+
+    def clean(val):
+        if pd.isna(val): return None
+        s = str(val).strip().replace('€','').replace('.','').replace(',','.')
+        try: return float(s)
+        except: return None
+
+    for _, row in df.iterrows():
+        raw_desc = row[IDX["DESCRIZIONE"]]
+        tot = clean(row[IDX["IMPORTO_TOT"]])
+
+        if curr:
+            if tot is not None: foot_hits += 1
+            if foot_hits >= 2:
+                rid, rdesc, sim = find_semantic_match(curr["desc"], conn)
+                action = "BRANCH"
+                
+                if rid:
+                    if sim >= SIMILARITY_MERGE: action = "MERGE"
+                    elif sim >= SIMILARITY_JUDGE:
+                        is_merge, _ = judge_similarity(curr["desc"], rdesc)
+                        if is_merge: action = "MERGE"
+                
+                if action == "BRANCH":
+                    rid = insert_new_recipe(conn, curr, filename)
+                    stats["branch"] += 1
+                else:
+                    merge_into_recipe(conn, rid, curr, filename)
+                    stats["merge"] += 1
+                
+                # RECALC with SELECTED STRATEGY
+                recalc_recipe_stats(rid, conn)
+                
+                curr = None; foot_hits = 0; continue
+
+        if not curr and pd.notna(row[IDX["ARTICOLO"]]) and pd.notna(raw_desc) and tot is None:
+            curr = {"code": str(row[IDX["ARTICOLO"]]), "desc": str(raw_desc), "components": []}
+            foot_hits = 0; continue
+
+        if curr and pd.notna(raw_desc) and tot is None:
+            p = clean(row[IDX["P_COMP"]])
+            q = clean(row[IDX["Q_COMP"]])
+            if p is not None or q is not None:
+                is_man = "operaio" in str(raw_desc).lower()
+                curr["components"].append({"desc": str(raw_desc), "type": "MAN" if is_man else "MAT", "qty": q or 0, "price": p or 0})
+
     conn.commit()
     conn.close()
+    return stats
 
-# --- PARSING ---
-def clean_float(val):
-    if pd.isna(val) or str(val).strip() == "": return None
-    s = str(val).strip().replace('€', '').strip()
-    if ',' in s and '.' in s: s = s.replace('.', '').replace(',', '.')
-    elif ',' in s: s = s.replace(',', '.')
-    try: return float(s)
-    except: return None
-
-def is_populated(val):
-    return pd.notna(val) and str(val).strip() != ""
-
-def process_excel_file(filepath):
-    """
-    Parsing V5 Strict.
-    Restituisce il numero di ricette salvate o solleva eccezione.
-    """
-    df = pd.read_excel(filepath, header=None, dtype=str)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    filename_short = os.path.basename(filepath)
-    current_recipe = None
-    footer_hits = 0 # Contatore per la regola "almeno due volte importo totale"
-    saved_count = 0
-    
-    # Per sicurezza cancelliamo vecchie ricette di questo file se era un UPDATE
-    c.execute("DELETE FROM recipes WHERE source_file = ?", (filename_short,))
-    # Nota: SQLite con FK ON DELETE CASCADE pulirebbe i componenti, ma per sicurezza...
-    # (Qui assumiamo un DB semplice. In prod useremmo una transazione esplicita)
-
-    for i, row in df.iterrows():
-        raw_art = row[IDX["ARTICOLO"]]
-        raw_desc = row[IDX["DESCRIZIONE"]]
-        val_tot = clean_float(row[IDX["IMPORTO_TOT"]])
-        
-        # 1. Chiusura
-        if current_recipe:
-            if val_tot is not None: footer_hits += 1
-            if footer_hits >= 2:
-                u_art = clean_float(row[IDX["P_ART"]]) or 0.0
-                u_man = clean_float(row[IDX["P_MAN"]]) or 0.0
-                # Insert Ricetta
-                c.execute("INSERT INTO recipes (code, description, unit_article_price, unit_manpower_price, source_file) VALUES (?,?,?,?,?)",
-                          (current_recipe["code"], current_recipe["desc"], u_art, u_man, filename_short))
-                rid = c.lastrowid
-                # Insert Componenti - Non inseriamo codice articolo per i componenti, in quanto non a disposizione
-                for comp in current_recipe["components"]:
-                    c.execute("INSERT INTO components (recipe_id, description, type, qty_coefficient, unit_price) VALUES (?,?,?,?,?,?)",
-                              (rid, comp['desc'], comp['type'], comp['qty'], comp['price']))
-                
-                saved_count += 1
-                current_recipe = None
-                footer_hits = 0
-                continue
-        
-        # 2. Apertura
-        if not current_recipe:
-            if is_populated(raw_art) and is_populated(raw_desc) and val_tot is None:
-                 current_recipe = {"code": str(raw_art).strip(), "desc": str(raw_desc).strip(), "components": []}
-                 footer_hits = 0
-                 continue
-                 
-        # 3. Body
-        if current_recipe and is_populated(raw_desc) and val_tot is None:
-            p_comp = clean_float(row[IDX["P_COMP"]])
-            q_comp = clean_float(row[IDX["Q_COMP"]])
-            if p_comp is not None or q_comp is not None:
-                is_labor = "operaio" in str(raw_desc).lower()
-                current_recipe["components"].append({
-                    "code": str(raw_art) if is_populated(raw_art) else "",
-                    "desc": str(raw_desc), "type": "MAN" if is_labor else "MAT",
-                    "qty": q_comp or 0.0, "price": p_comp or 0.0
-                })
-
-    conn.commit() # Commit unico per file
-    conn.close()
-    return saved_count
-
-# --- VETTORIZZAZIONE RESILIENTE (CHUNKED) ---
-
-def sync_vectors_incremental():
-    """
-    Processa i vettori mancanti.
-    """
-    print("\n🧠 VECTOR SYNC ENGINE: Avvio...")
-    conn = sqlite3.connect(DB_FILE)
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
-    
-    # 1. Contiamo quanto lavoro c'è da fare (Opzionale, solo per progress bar)
-    count_cursor = conn.execute("""
-        SELECT COUNT(*) FROM recipes r 
-        LEFT JOIN vec_recipes v ON r.id = v.rowid 
-        WHERE v.rowid IS NULL
-    """)
-    total_missing = count_cursor.fetchone()[0]
-    
-    if total_missing == 0:
-        print("   ✅ Tutti i vettori sono sincronizzati.")
-        conn.close()
-        return
-
-    print(f"   ⚠️  Target: {total_missing} nuove ricette da indicizzare.")
-    print(f"   ⚙️  Batch Size: {VECTOR_BATCH_SIZE}")
-
-    # 2. Cursore per processare a blocchi (Stream)
-    cursor = conn.execute("""
-        SELECT r.id, r.description 
-        FROM recipes r
-        LEFT JOIN vec_recipes v ON r.id = v.rowid
-        WHERE v.rowid IS NULL
-    """)
-
-    processed_so_far = 0
-    
+def sync_vectors():
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT r.id, r.description FROM recipes r LEFT JOIN vec_recipes v ON r.id = v.rowid WHERE v.rowid IS NULL")
     while True:
-        # FETCHMANY: Legge solo N righe in RAM
         batch = cursor.fetchmany(VECTOR_BATCH_SIZE)
-        
-        if not batch:
-            break # Finito tutto
-            
-        ids = [r[0] for r in batch]
+        if not batch: break
         texts = [str(r[1]).replace("\n", " ").strip() for r in batch]
-        
         try:
-            # Chiamata API
-            t0 = time.time()
             resp = client.embeddings.create(input=texts, model="text-embedding-3-small")
-            
-            # Preparazione dati binari
-            vec_data = []
-            for j, data_obj in enumerate(resp.data):
-                vec_bin = serialize_f32(data_obj.embedding)
-                vec_data.append((ids[j], vec_bin))
-            
-            # Scrittura e COMMIT immediato (Checkpointing)
+            vec_data = [(batch[i][0], serialize_f32(d.embedding)) for i, d in enumerate(resp.data)]
             conn.executemany("INSERT INTO vec_recipes(rowid, embedding) VALUES(?, ?)", vec_data)
-            conn.commit() 
-            
-            processed_so_far += len(batch)
-            elapsed = time.time() - t0
-            print(f"   saved batch: {processed_so_far}/{total_missing} ({elapsed:.2f}s)")
-            
+            conn.commit()
+            print(f"   -> Synced {len(batch)} vectors.")
         except Exception as e:
-            print(f"   ❌ CRITICAL ERROR nel batch (ID {ids[0]}-{ids[-1]}): {e}")
-            print("   ⏹️  Arresto di sicurezza. Rilancia lo script per riprendere da qui.")
-            break # Usciamo per evitare loop infiniti su errori API
-
+            print(f"Error: {e}"); break
     conn.close()
-    print("   ✅ Sync Session Terminata.")
 
-# --- MAIN LOOP ---
-
-def run_ingestion():
-    if not os.path.exists(INPUT_FOLDER):
-        os.makedirs(INPUT_FOLDER)
-        print(f"📁 Creata cartella '{INPUT_FOLDER}'.")
-        return
-
-    init_db()
-    files = glob.glob(os.path.join(INPUT_FOLDER, "*.xlsx"))
-    print(f"📦 BULK MANAGER: {len(files)} file rilevati.")
-    
-    new_data_flag = False
-    
-    # FASE 1: Parsing Files (Commit per file)
-    for filepath in files:
-        filename = os.path.basename(filepath)
-        f_hash = get_file_hash(filepath)
-        
-        if not f_hash:
-            print(f"❌ Impossibile leggere {filename}")
-            continue
-
-        status = check_file_status(filename, f_hash)
-        
-        if status == "SKIP":
-            continue # Silenzioso per non intasare log
-            
-        print(f"📄 Processing: {filename}...", end="")
-        try:
-            cnt = process_excel_file(filepath)
-            if cnt > 0:
-                print(f" OK ({cnt} ricette)")
-                log_ingestion_result(filename, f_hash, "SUCCESS", cnt)
-                new_data_flag = True
-            else:
-                print(" ZERO DATI (Skipped)")
-                log_ingestion_result(filename, f_hash, "WARNING_ZERO", 0)
-        except Exception as e:
-            print(f" ERROR: {str(e)[:50]}...")
-            log_ingestion_result(filename, f_hash, "ERROR", 0)
-
-    # FASE 2: Vector Sync (Batch & Checkpoint)
-    # Lo lanciamo solo se abbiamo caricato nuovi dati o se ci sono residui precedenti
-    # (Per sicurezza lo lanciamo sempre, tanto controlla lui se c'è lavoro)
-    sync_vectors_incremental()
-    
-    print("\n🏁 Sistema pronto.")
+# --- ENTRY POINT ---
 
 if __name__ == "__main__":
-    run_ingestion()
+    parser = argparse.ArgumentParser(description="Bulk Ingestion & Pricing Update")
+    parser.add_argument("--override", type=str, choices=["MAX", "LATEST", "SMART_1Y"], 
+                        help="Forza una strategia di prezzo specifica (Default: SMART_ADAPTIVE)")
+    args = parser.parse_args()
+    
+    if args.override:
+        PRICING_MODE = args.override
+        print(f"⚠️  OVERRIDE ATTIVO: Strategia Prezzi impostata su '{PRICING_MODE}'")
+    else:
+        print(f"ℹ️  Strategia Prezzi Standard: SMART_ADAPTIVE")
+
+    files = glob.glob(os.path.join(INPUT_FOLDER, "*.xlsx"))
+    print(f"📦 SMART INGESTION: {len(files)} file.")
+    for f in files:
+        print(f"Processing {os.path.basename(f)}...")
+        s = process_file(f)
+        print(f"   -> BRANCH: {s['branch']} | MERGE: {s['merge']}")
+    sync_vectors()

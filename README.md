@@ -82,3 +82,13 @@ Il sistema permette di trasformare richieste di offerta (RDO) disordinate (PDF, 
     python generate_quote.py
     ```
 6.  Troverai il preventivo completo nella cartella `preventivi`.
+
+## 🧪 Testing & Quality Assurance
+
+Il progetto include una suite di unit test per validare la logica di business critica (calcolo prezzi, deduplica, sicurezza volatilità) senza toccare il database di produzione.
+
+### Eseguire i Test
+Assicurati di essere nella root del progetto:
+
+```bash
+python -m unittest tests/test_smart_pricing.py
