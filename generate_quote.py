@@ -26,7 +26,7 @@ else:
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- CONFIGURAZIONE ---
-DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
+DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v3_smart.db")
 FILE_INPUT_RDO = os.path.join(PROJECT_ROOT, "richieste_ordine", "input_cliente_clean.xlsx")
 
 # Generazione nome file output dinamico
