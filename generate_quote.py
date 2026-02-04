@@ -146,19 +146,44 @@ def validate_match_with_gpt(rdo_desc, candidates):
         options_text += f"Opzione {i+1}: {c['desc']} (Score: {c['score']:.2f} | P_ARTICOLO: {c['p_art']}, P_MANODOPERA: {c['p_man']})\n"
 
     prompt = f"""
-    Sei un assistente esperto nella stesura di offerte per impianti meccanici ed elettrici.
-    Ti fornirò la descrizione di una voce di computo metrico fornita dal cliente che dobbiamo valutare, ed una lista di possibili voci di costo proveniente dal nostro database di offerte storiche.
-    Il tuo compito è selezionare la corrispondenza tecnica migliore in base alle specifiche indicate nella descrizione.
-    Valuta attentamente le differenze in termini di misure, potenza, materiali e altre caratteristiche tecniche.
-    Se nessuna delle opzioni corrisponde adeguatamente, indica che non c'è corrispondenza.
-    è accettabile selezionare una voce simile solo se le differenze non influenzano la funzionalità per cui è richiesto l'elemento ma devi segnalare le differenze.
-    Nello scegliere dai priorità alle voci di costo che esplicitano almeno uno tra prezzo articolo e prezzo manodopera.
-    Voce di computo metrico: "{rdo_desc}"
-    
-    Voci di costo trovate:
+    Sei un Senior Quantity Surveyor ed esperto in computi metrici per impianti MEP (Meccanici, Elettrici, Idraulici).
+
+    IL TUO OBIETTIVO:
+    Ti fornirò una voce di computo (RDO) e una lista di opzioni dal database (DATABASE). Devi identificare la voce del database tecnicamente equivalente o compatibile.
+
+    INPUT:
+    Voce RDO: "{rdo_desc}"
+    Opzioni DATABASE:
     {options_text}
 
-    Rispondi JSON: {{ "selected_index": 1, "status": "OK" se la voce di costo trovata la inseriresti nel preventivo finale per il cliente, "CHECK" se la voce è adatta ma vorresti una seconda verifica prima di inserirla nel preventivo finale, "NO MATCH" se non inseriresti nessuna delle opzioni nel preventivo finale, "reason": "..." }}
+    ISTRUZIONI CRITICHE PER IL CONFRONTO:
+
+    1.  **NORMALIZZAZIONE UNITÀ DI MISURA (CRITICO):**
+        Prima di confrontare, converti mentalmente tutte le misure alla stessa unità.
+        - Lunghezza: 120mm = 12cm = 0.12m. Se le dimensioni fisiche coincidono, È UN MATCH.
+        - Potenza: 1000W = 1kW.
+        - Non scartare mai una voce solo perché l'unità di misura è scritta diversamente (es. "3x1.5" vs "3G1,5").
+
+    2.  **ANALISI TECNICA FUNZIONALE:**
+        - Chiediti: "Posso installare l'articolo del database al posto di quello richiesto senza varianti sostanziali?"
+        - Se la risposta è SÌ, seleziona la voce.
+        - Se la descrizione del database è meno dettagliata ma non contraddice la RDO, è un candidato valido (es. RDO specifica il colore, DB no -> MATCH).
+
+    3.  **PRIORITÀ:**
+        - A parità di corrispondenza tecnica, privilegia le voci che hanno un prezzo esplicito (Articolo o Manodopera).
+
+    OUTPUT JSON:
+    Rispondi esclusivamente con questo formato JSON:
+    {{
+    "selected_index": [numero intero dell'opzione scelta, 1-based. Metti 0 se nessuna corrisponde],
+    "status": "OK" | "CHECK" | "NO MATCH",
+    "reason": "Spiegazione sintetica. SE status è OK/CHECK, devi esplicitare le conversioni fatte (es. 'Trovato 120mm che corrisponde ai 12cm richiesti')."
+    }}
+
+    DEFINIZIONE STATUS:
+    - "OK": Corrispondenza tecnica perfetta o equivalenza matematica verificata (es. cm vs mm).
+    - "CHECK": L'articolo è funzionalmente adatto ma differisce per dettagli minori (es. marca diversa, caratteristiche accessorie non specificate).
+    - "NO MATCH": Differenze sostanziali di tipo, potenza, dimensioni fisiche reali (non di unità) o tecnologia.
     """
     
     try:
