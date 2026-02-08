@@ -8,6 +8,7 @@ import time
 import sys
 import sqlite_vec
 import numpy as np
+import argparse
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
@@ -171,6 +172,14 @@ def get_components(cursor, recipe_id):
 # --- MAIN PROCESS ---
 
 def main():
+    
+    parser = argparse.ArgumentParser(description="Generatore Preventivi AI")
+    parser.add_argument("--solo-manodopera", action="store_true", help="Quota solo la manodopera (Azzera i costi materiali da DB)")
+    args = parser.parse_args()
+    
+    if args.solo_manodopera:
+        print("👷 MODALITÀ SOLO MANODOPERA ATTIVA: I prezzi dei materiali DB saranno impostati a 0.")
+    
     # 1. Setup Input
     WORK_DIR = os.path.join(PROJECT_ROOT, "richieste_ordine")
     try:
@@ -283,6 +292,10 @@ def main():
             p_man_db = float(match[4] or 0)
             source_file = match[5] # Colonna SORGENTE recuperata
 
+            # Override per modalità solo manodopera
+            if args.solo_manodopera:
+                p_mat_db = 0.0
+
             if status == "MATCH": stats["match"] += 1
             else: stats["warning"] += 1
 
@@ -304,7 +317,12 @@ def main():
             for c in comps:
                 c_coeff = float(c["quantity"])
                 c_price = float(c["price"])
-                
+                c_type = c.get("type", "MAT")
+
+                # Se siamo in modalità solo manodopera, azzeriamo i prezzi dei materiali
+                if args.solo_manodopera and c_type.upper() != "MAN":
+                    c_price = 0.0
+
                 children_to_write.append({
                     "TIPO": "FIGLIO",
                     "CODICE": "",
