@@ -1,115 +1,131 @@
-# 🏗️ AI MEP Estimator (Preventivatore Elettrico) - MVP v2.0
+# 🏗️ AI MEP Estimator (Preventivatore Elettrico) - MVP v3.0
 
-Sistema intelligente per la generazione di computi metrici e preventivi elettrici (MEP), basato su RAG (Retrieval-Augmented Generation) e algoritmi di Pricing Adattivo.
-
----
-
-## 🌟 What's New in v2.0 (Smart Pricing)
-
-* **🧠 Adaptive Pricing Logic:** Il sistema non si limita a una media statica. Rileva automaticamente **shock di prezzo** (>20% di variazione) e dati obsoleti (>6 mesi), spostando dinamicamente il peso statistico verso i dati di mercato più recenti.
-* **🛡️ Volatility Safety Net:** Identifica articoli ad alto rischio (es. Quadri Elettrici complessi) calcolando il **Coefficiente di Variazione (CV)**. Se la volatilità supera la soglia di sicurezza, il sistema blocca il prezzo automatico e richiede una stima manuale ("MANUAL ESTIMATION").
-* **🤖 Agentic Deduplication:** Un Agente AI interviene durante l'ingestion per decidere se un nuovo articolo è una variante di uno esistente (**Merge**) o un prodotto tecnicamente diverso (**Branch**), mantenendo il database pulito.
-* **📊 Pricing Strategies:** Supporto per strategie di prezzo forzate via riga di comando (`MAX`, `LATEST`, `SMART_ADAPTIVE`) per scenari di mercato incerti.
+Sistema intelligente end-to-end per la digitalizzazione, normalizzazione e preventivazione di computi metrici MEP (Meccanici, Elettrici, Idraulici).
+Il sistema utilizza una pipeline **RAG Agentica** (Retrieval-Augmented Generation) combinata con algoritmi di **Smart Pricing** e modelli LLM (GPT-4o) per validare le scelte tecniche.
 
 ---
 
-## 📂 Project Structure
+## 🌟 What's New in v3.0 (Full Pipeline)
+
+* **📄 Digitizer & Normalizer Unificato:** Nuova CLI (`normalize_input.py`) che accetta PDF, Immagini o Excel. Usa Agenti OpenAI per OCR e pulizia semantica, producendo un output JSON strutturato (`_clean.json`) invece di file Excel intermedi.
+* **💾 Database V3 Smart:** Nuova struttura database (`preventivatore_v3_smart.db`) che supporta:
+    * Tracciamento file sorgente per ogni prezzo.
+    * Indici di volatilità e complessità.
+    * Relazioni Padre/Figlio (Ricette e Componenti).
+* **🌳 Quotation Engine Gerarchico:** Il generatore di preventivi (`generate_quote.py`) ora esplode le voci complesse. Nel preventivo finale vedrai la voce "Padre" (es. Punto Luce) e sotto i "Figli" (Scatola, Frutto, Placca) con i relativi fabbisogni.
+* **🛡️ Crash Recovery:** Il preventivatore scrive un flusso CSV in tempo reale (`tmp/stream...`). Se il processo si interrompe, non perdi il lavoro svolto fino a quel momento.
+* **📡 Interactive Sonar V3:** Tool da riga di comando per esplorare il database vettoriale, analizzare la volatilità dei prezzi e verificare i match con GPT in tempo reale.
+
+---
+
+## 📂 Struttura del Progetto
 
     /preventivatore-ai
     │
-    ├── db/                     # Database SQLite (Relazionale + Vettoriale)
-    ├── richieste_ordine/       # Input: File RDO del cliente (.xlsx)
-    ├── preventivi/             # Output: Preventivi generati con analisi prezzi
-    ├── tests/                  # Suite di Test End-to-End e Regressione
-    │   └── test_pipeline.py
+    ├── db/                     # Database SQLite (preventivatore_v3_smart.db)
+    ├── richieste_ordine/       # Input (PDF/XLSX) e Output Intermedi (JSON)
+    ├── preventivi/             # Output Finale: Preventivi Excel (.xlsx)
+    ├── tmp/                    # File temporanei e Recovery Stream
     │
-    ├── scripts/                # Script di Ingestion e Manutenzione
-    │   ├── bulk_ingestion.py   # Core Ingestion Engine (Adaptive Logic)
-    │   ├── step17_migrate...   # Script di migrazione dati Legacy -> Smart
-    │   └── normalize_input.py  # Utility di pre-processing
+    ├── scripts/                # Script di Manutenzione
+    │   ├── bulk_ingestion.py   # Ingestion Motore Prezzi (Smart Adaptive)
+    │   └── step17_migrate...   # Script di migrazione da V2 a V3
     │
-    ├── generate_quote.py       # Core Quotation Engine (Script Principale)
+    ├── normalize_input.py      # ENTRY POINT 1: Digitizer & Normalizer
+    ├── generate_quote.py       # ENTRY POINT 2: Generatore Preventivi
+    ├── interactive_sonar.py    # ENTRY POINT 3: Esplorazione DB
+    │
     ├── requirements.txt        # Dipendenze Python
     └── README.md               # Documentazione Progetto
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Workflow Operativo
 
-### 1. Installazione
+Il processo si divide in tre fasi distinte: **Input**, **Ingestion (Knowledge Base)** e **Output**.
 
-    pip install -r requirements.txt
-    # Nota: Assicurarsi che l'estensione sqlite-vec sia configurata se si usa vector search avanzata
+### FASE 1: Digitalizzazione e Normalizzazione
+Il primo passo è trasformare qualsiasi input del cliente (PDF, Scansione, Excel sporco) in un formato JSON pulito e comprensibile dalla macchina.
 
-### 2. Ingestion Dati (Popolamento DB)
-Carica listini o storici preventivi nel "Cervello" del sistema. Lo script si trova ora nella cartella `scripts/`.
+**Sintassi:**
 
-    # Modalità Standard (Smart Adaptive - Consigliata)
+    python normalize_input.py v3 --file "richieste_ordine/computo_cliente.pdf"
+
+**Cosa succede:**
+1.  **Rilevamento:** Se è un PDF/IMG, attiva l'Agente Digitizer (OCR con GPT-4o Vision).
+2.  **Estrazione:** Crea un Excel grezzo (`raw_input.xlsx`).
+3.  **Normalizzazione:** L'AI analizza semanticamente le colonne, identifica Descrizioni e Quantità.
+4.  **Output:** Genera un file `richieste_ordine/[nome_file]_clean.json`.
+
+**Opzioni Avanzate:**
+* `--deep-scan`: Invia tutto il contenuto del file all'AI per capire contesti complessi (più lento, più preciso).
+* `--sample-rows 100`: Aumenta il numero di righe analizzate per file molto lunghi.
+
+### FASE 2: Aggiornamento Knowledge Base (Opzionale)
+Se hai nuovi listini fornitori o storici preventivi da imparare.
+
     python scripts/bulk_ingestion.py
 
-    # Modalità Override (es. Forza prezzi massimi per prudenza)
-    python scripts/bulk_ingestion.py --override MAX
-    # Opzioni: MAX, LATEST, SMART_1Y, SMART_ADAPTIVE
+**Logica di Ingestion:**
+* **Smart Merge:** Se una voce esiste già, aggiorna lo storico prezzi.
+* **Branching:** Se una voce è tecnicamente diversa, crea una nuova "Ricetta".
+* **Pricing:** Calcola volatilità e prezzi medi pesati (vedi sezione Smart Pricing).
 
-### 3. Generazione Preventivo
-Processa una richiesta cliente (RDO). Il sistema cercherà match semantici e applicherà la logica di pricing.
+### FASE 3: Generazione Preventivo
+Prende l'ultimo file JSON generato e crea il preventivo Excel.
 
-    # Assicurarsi che il file input sia in richieste_ordine/input_cliente_clean.xlsx
     python generate_quote.py
 
-*L'output verrà salvato in `preventivi/` con evidenziazione automatica delle voci a rischio (Giallo/Arancione).*
+**Funzionalità Chiave:**
+* **Auto-Detection:** Trova automaticamente l'ultimo file `_clean.json` nella cartella `richieste_ordine`.
+* **Matching Ibrido:** Vettoriale (Ricerca) + GPT Judge (Validazione tecnica).
+* **Esplosione:** Scrive nel file Excel sia la voce aggregata che i componenti analitici.
+* **Recovery:** Scrive su `tmp/preventivo_recovery_stream.csv` riga per riga.
+* **Output:** Salva in `preventivi/[PREVENTIVO - Data] nome_file.xlsx`.
 
-### 4. Esecuzione Test
-Per verificare che la logica finanziaria e di sicurezza funzioni correttamente:
+### FASE 4: Analisi e Debug (Sonar)
+Per interrogare il DB manualmente e capire perché una voce non viene trovata o ha un prezzo specifico.
 
-    python -m unittest tests/test_pipeline.py
-
----
-
-## 🧠 Logica di Smart Pricing (Technical Deep Dive)
-
-Il calcolo del prezzo unitario (`unit_price`) segue questo albero decisionale rigoroso:
-
-1.  **Safety Check (Volatilità):**
-    * Viene calcolato il CV (Deviazione Standard / Media) su tutto lo storico.
-    * Se `CV > 0.5` (alta instabilità), la voce è marcata `is_complex`.
-    * **Output:** Prezzo `0.00 €` + Stato `MANUAL_ESTIMATION`.
-
-2.  **Adaptive Trigger (Reattività):**
-    * Il sistema confronta l'ultimo prezzo inserito con la media storica.
-    * **Trigger 1 (Shock):** Variazione prezzo > 20%.
-    * **Trigger 2 (Obsolescenza):** Ultimo aggiornamento > 180 giorni fa.
-    * Se uno dei trigger scatta: **Peso 90%** all'ultimo prezzo, **10%** allo storico.
-
-3.  **Standard Fallback (Stabilità):**
-    * Se il mercato è stabile, applica una media pesata temporale classica.
-    * **Pesi:** 1.0 (Anno corrente), 0.5 (Anno precedente), 0.1 (Storico antico).
+    python interactive_sonar.py
 
 ---
 
-## 🛠️ Manutenzione & Migrazione
+## 🧠 Logica Tecnica (Deep Dive)
 
-### Migrazione da Legacy (v1)
-Se provieni dalla versione 1 del database, esegui questo script per inizializzare le strutture dati "Smart" e calcolare le metriche iniziali:
+### 1. Smart Pricing Adaptive
+Il prezzo nel DB v3 non è statico. `bulk_ingestion.py` calcola il prezzo unitario seguendo queste regole:
+
+* **Trigger Shock:** Se il nuovo prezzo devia >20% dalla media storica -> Peso 90% all'ultimo dato (il mercato è cambiato).
+* **Trigger Obsolescenza:** Se il dato è vecchio (>180 gg) -> Peso dominante al nuovo dato.
+* **Volatilità:** Calcola il CV (Coefficiente Variazione). Se > 0.5, la voce viene marcata come `is_complex` e richiede attenzione.
+
+### 2. Matching Gerarchico (Padre/Figlio)
+A differenza della v2, il sistema v3 gestisce la composizione:
+
+* **DB:** Una "Ricetta" (es. Punto Luce) è collegata a N "Componenti" (Scatola, Cavo, Frutto).
+* **Output:** `generate_quote.py` scrive la riga PADRE (con il prezzo totale matchato) e subito sotto le righe FIGLIO (indentate) con i fabbisogni calcolati (`Quantità RDO * Coefficiente Componente`).
+
+### 3. Stati del Preventivo (Color Coding)
+Il file Excel finale usa codici colore per guidare l'utente:
+
+* **VERDE (MATCH):** Corrispondenza tecnica verificata da GPT o similarità vettoriale > 96%.
+* **GIALLO (WARNING):** Corrispondenza probabile ma con dubbi (es. marca diversa, descrizione ambigua).
+* **ROSSO (NO MATCH):** Nessuna corrispondenza trovata nel DB. Prezzo basato su stima RDO o zero.
+
+---
+
+## 🛠️ Manutenzione
+
+### Migrazione da v2 a v3
+Se hai un database legacy `preventivatore_v2_bulk.db`, usa lo script di migrazione per generare la struttura v3 e ricalcolare i vettori:
 
     python scripts/step17_migrate_legacy.py
 
-*Attenzione: Questo script resetta il DB target `preventivatore_v3_smart.db`.*
+*Nota: Questo resetta il DB target v3.*
+
+### Reset Recovery
+Se `generate_quote.py` si interrompe, puoi consultare `tmp/preventivo_recovery_stream.csv` per i dati parziali. Questo file viene sovrascritto ad ogni nuova esecuzione completa.
 
 ---
 
-## 🏷️ Versionamento (Git Flow)
-
-### Creazione Tag MVP v2.0
-
-    git add .
-    git commit -m "Release MVP v2.0: Smart Pricing & Adaptive Logic"
-    git push origin main
-    git tag -a v2.0 -m "MVP v2: Smart Pricing, Safety Nets & Unit Tests"
-    git push origin v2.0
-
-### Ripristino MVP v1.0 (Legacy)
-Se necessario tornare alla versione base (solo RAG, senza logica prezzi complessa), fare checkout del tag `v1.0` (se precedentemente creato).
-
----
-**Project Status:** Production Ready (MVP v2.0)
+**Stato Progetto:** Produzione (MVP v3.0)

@@ -6,7 +6,7 @@ from dotenv import load_dotenv, find_dotenv
 
 # Importiamo il motore di ingestion esistente come libreria
 # Assicurati che bulk_ingestion.py sia nella stessa cartella
-import scripts.bulk_ingestion as engine
+import bulk_ingestion as engine
 
 # --- PATH SETUP ---
 dotenv_path = find_dotenv()
@@ -187,6 +187,9 @@ def migrate_loop():
         except Exception as e:
             print(f"\n❌ Errore record {rid_old}: {e}")
             stats["errors"] += 1
+
+    print("\n💾 Committing transaction...")
+    conn_tgt.commit()
 
     conn_src.close()
     conn_tgt.close() # Chiudiamo per flushare

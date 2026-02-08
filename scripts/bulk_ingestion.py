@@ -25,7 +25,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # CONFIGURAZIONE
 INPUT_FOLDER = os.path.join(PROJECT_ROOT, "data")
-DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v2_bulk.db")
+DB_FILE = os.path.join(PROJECT_ROOT, "db", "preventivatore_v3_bulk.db")
 VECTOR_BATCH_SIZE = 200
 
 # SOGLIE SMART PRICING ADATTIVO
