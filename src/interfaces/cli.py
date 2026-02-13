@@ -1,113 +1,129 @@
 import argparse
 import sys
 import os
+import logging
 
-# 1. Setup Path per trovare i moduli 'src'
-# Aggiunge la root del progetto al PYTHONPATH
+# 1. Setup Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # 2. Imports Infrastrutturali
 from src.infrastructure.database import get_db_connection
-from src.infrastructure.repositories import RecipeRepository
+from src.infrastructure.schema import init_domain_schema
+from src.infrastructure.repositories import CatalogRepository
 from src.infrastructure.parsers import load_json_input
-from src.infrastructure.excel_writer import write_quote_dto_to_excel 
+from src.infrastructure.excel_writer import write_quote_dto_to_excel
 
-# 3. Imports Servizi
+# 3. Imports Servizi & Interfacce
 from src.services.ingestion_service import IngestionService
 from src.services.quote_service import QuoteService
 from src.services.digitization_service import DigitizationService
+from src.interfaces.sonar_tui import SonarTUI
+from src.interfaces.diagnostics import run_diagnostics
+
+# Configurazione Logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 def main():
     parser = argparse.ArgumentParser(description="Preventivatore AI - CLI Manager")
     subparsers = parser.add_subparsers(dest="command", help="Comando da eseguire")
     
-    # --- COMMAND: INGEST (Listini) ---
-    ingest_parser = subparsers.add_parser("ingest", help="Importa file Excel o XML")
-    ingest_parser.add_argument("--file", required=True, help="Percorso del file")
-    ingest_parser.add_argument("--type", choices=["excel", "xml", "auto"], default="auto", help="Tipo di file")
-    ingest_parser.add_argument("--strategy", choices=["SMART_ADAPTIVE", "MAX", "LATEST"], default="SMART_ADAPTIVE", help="Strategia prezzi")
+    # --- COMMAND: INGEST ---
+    ingest_parser = subparsers.add_parser("ingest", help="Importa file (XML/Excel) o intere cartelle")
+    ingest_parser.add_argument("--file", required=True, help="Percorso del file singolo o della cartella da processare")
+    ingest_parser.add_argument("--type", choices=["auto"], default="auto", help="Tipo di file (default: auto-detect)")
+    
+    # --- COMMAND: DIGITIZE ---
+    digit_parser = subparsers.add_parser("digitize", help="Digitalizza PDF/Immagini")
+    digit_parser.add_argument("--file", required=True, help="File input (PDF/JPG)")
+    digit_parser.add_argument("--deep-scan", action="store_true", help="Abilita OCR avanzato (Vision)")
+    
+    # --- COMMAND: QUOTE ---
+    quote_parser = subparsers.add_parser("quote", help="Genera Preventivo Excel")
+    quote_parser.add_argument("--file", required=True, help="JSON richiesta normalizzata")
+    quote_parser.add_argument("--output", required=True, help="Path Excel output")
+    quote_parser.add_argument("--solo-manodopera", action="store_true", help="Azzera costi materiali")
 
-    # --- COMMAND: DIGITIZE (OCR/Vision) ---
-    digitize_parser = subparsers.add_parser("digitize", help="Estrai dati da PDF/IMG e normalizza")
-    digitize_parser.add_argument("--file", required=True, help="File input (PDF, IMG, XLS, CSV)")
-    digitize_parser.add_argument("--deep-scan", action="store_true", help="Analisi semantica approfondita")
-    digitize_parser.add_argument("--sample", type=int, default=0, help="Test su N righe")
+    # --- COMMAND: SONAR ---
+    subparsers.add_parser("sonar", help="Avvia interfaccia di ricerca vettoriale")
 
-    # --- COMMAND: QUOTE (Preventivi) ---
-    quote_parser = subparsers.add_parser("quote", help="Genera preventivo da JSON normalizzato")
-    quote_parser.add_argument("--file", required=True, help="File JSON (output di normalize_input)")
-    quote_parser.add_argument("--output", default="preventivo_output.xlsx", help="File Excel output")
-    quote_parser.add_argument("--solo-manodopera", action="store_true", help="Calcola solo costo installazione")
+    # --- COMMAND: INIT-DB ---
+    subparsers.add_parser("init-db", help="Inizializza/Aggiorna schema Database")
+
+    # --- COMMAND: CHECK ---
+    subparsers.add_parser("check", help="Esegue diagnostica sulla qualità dei dati")
 
     args = parser.parse_args()
 
-    # --- ROUTING DEI COMANDI ---
-
     if args.command == "ingest":
-        if not os.path.exists(args.file):
-            print(f"❌ File non trovato: {args.file}")
-            return
         try:
             conn = get_db_connection()
-            repo = RecipeRepository(conn)
+            repo = CatalogRepository(conn)
             service = IngestionService(repo)
             
-            service.process_file(
-                file_path=args.file, 
-                file_type=args.type, 
-                pricing_mode=args.strategy
-            )
+            # USIAMO PROCESS_PATH per supportare sia file che cartelle
+            service.process_path(args.file)
+            
             conn.close()
         except Exception as e:
             print(f"❌ Errore Ingestion: {e}")
+            import traceback
+            traceback.print_exc()
 
     elif args.command == "digitize":
-        if DigitizationService is None:
-            print("❌ Errore: Modulo DigitizationService mancante.")
-            return
-            
         try:
             service = DigitizationService()
-            service.process_document(
-                input_file=args.file,
-                deep_scan=args.deep_scan,
-                sample_rows=args.sample
-            )
+            output_path = service.process_document(args.file, deep_scan=args.deep_scan)
+            print(f"✅ Digitalizzazione completata: {output_path}")
         except Exception as e:
-            print(f"❌ Errore Digitizer: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Errore Digitalizzazione: {e}")
 
     elif args.command == "quote":
-        # 1. Caricamento Input (JSON Diretto)
         try:
-            print(f"📂 Lettura input JSON: {args.file}")
-            normalized_data = load_json_input(args.file)
-        except Exception as e:
-            print(f"❌ Errore lettura file: {e}")
-            return
+            raw_data = load_json_input(args.file)
+            if not raw_data:
+                print("❌ Errore: File input vuoto o non valido.")
+                return
 
-        try:
             conn = get_db_connection()
-            repo = RecipeRepository(conn)
+            repo = CatalogRepository(conn)
             service = QuoteService(repo)
-
-            # 2. Esecuzione Service (Logica 1:1)
-            result_dto = service.generate_quote(
-                data_input=normalized_data, 
-                solo_manodopera=args.solo_manodopera
-            )
-
-            # 3. Scrittura Output (Funzione Rinominata Correttamente)
+            
+            result_dto = service.generate_quote(raw_data, args.solo_manodopera)
+            
             write_quote_dto_to_excel(result_dto, args.output)
-            
             conn.close()
-            
+            print(f"✅ Preventivo generato: {args.output}")
         except Exception as e:
-            print(f"❌ Errore Generazione Preventivo: {e}")
+            print(f"❌ Errore Preventivo: {e}")
             import traceback
             traceback.print_exc()
 
+    elif args.command == "sonar":
+        try:
+            app = SonarTUI()
+            app.run()
+        except KeyboardInterrupt:
+            print("\n👋 Chiusura Sonar.")
+        except Exception as e:
+            print(f"❌ Errore Sonar: {e}")
+
+    elif args.command == "init-db":
+        print("🚀 Avvio procedura di inizializzazione Database...")
+        try:
+            conn = get_db_connection()
+            init_domain_schema(conn)
+            conn.close()
+            print("🏁 Procedura completata con successo.")
+        except Exception as e:
+            print(f"❌ Errore critico durante init-db: {e}")
+            sys.exit(1)
+    
+    elif args.command == "check":
+            try:
+                run_diagnostics()
+            except Exception as e:
+                print(f"❌ Errore Diagnostica: {e}")
     else:
         parser.print_help()
 

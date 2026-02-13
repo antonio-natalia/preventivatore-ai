@@ -3,21 +3,16 @@ import xlsxwriter
 from src.core.entities import QuoteResult
 
 def write_quote_dto_to_excel(result: QuoteResult, output_path: str):
-    """
-    Genera l'Excel finale rispettando RIGOROSAMENTE la logica di formattazione legacy.
-    """
-    print(f"📊 Generazione Excel Legacy Style: {output_path}")
+    """Genera Excel rispettando formato legacy ma usando dati deterministici."""
+    print(f"📊 Generazione Excel: {output_path}")
     
-    # 1. FLATTENING (DTO -> Lista Piatta)
     rows_for_df = []
     
     for item in result.items:
-        # Calcoli Totali Padre
-        p_unit_tot_db = item.p_unit_tot_db
-        p_tot_db = p_unit_tot_db * item.quantity_input
+        # Calcoli Totali
+        p_tot_db = item.p_unit_tot_db * item.quantity_input
         p_tot_rdo = item.p_unit_tot_rdo * item.quantity_input
-        
-        p_unit_delta = p_unit_tot_db - item.p_unit_tot_rdo
+        p_unit_delta = item.p_unit_tot_db - item.p_unit_tot_rdo
         p_tot_delta = p_tot_db - p_tot_rdo
         
         # Riga PADRE
@@ -29,46 +24,46 @@ def write_quote_dto_to_excel(result: QuoteResult, output_path: str):
             "UM": item.um_input,
             "FAB": "",
             "SORGENTE": item.source_file,
+            "CODICE_DB": item.match_sku, # NUOVO: Mostra SKU matched
             "DESC_DB": item.match_description,
             "P_UNIT_MAT_DB": item.p_unit_mat_db,
             "P_UNIT_MAN_DB": item.p_unit_man_db,
             "P_MAT_RDO": item.p_mat_rdo,
             "P_MAN_RDO": item.p_man_rdo,
-            "P_UNIT_TOT_DB": p_unit_tot_db,
+            "P_UNIT_TOT_DB": item.p_unit_tot_db,
             "P_UNIT_TOT_RDO": item.p_unit_tot_rdo,
             "P_UNIT_DELTA": p_unit_delta,
             "P_TOT_DB": p_tot_db,
             "P_TOT_RDO": p_tot_rdo,
             "P_TOT_DELTA": p_tot_delta,
             "STATO": item.status,
+            "INTEGRITA": item.integrity_status, # NUOVO: Info su calcolo
             "REASONING": item.reasoning
         })
         
-        # Righe FIGLI
+        # Righe FIGLI (BOM)
         for child in item.children:
             child_fab = child.unit_quantity * item.quantity_input
-            child_tot_db = child.unit_price * child_fab
-            
-            p_unit_mat = child.unit_price if child.type == "MAT" else 0
-            p_unit_man = child.unit_price if child.type == "MAN" else 0
+            child_tot = child.unit_price * child_fab
             
             rows_for_df.append({
                 "TIPO": "FIGLIO",
-                "CODICE": "",
+                "CODICE": child.sku, # SKU Figlio
                 "DESCRIZIONE": f"↳ {child.description}",
                 "QTA": child.unit_quantity,
                 "UM": "",
                 "FAB": child_fab,
-                "SORGENTE": item.source_file,
+                "SORGENTE": "",
+                "CODICE_DB": "",
                 "DESC_DB": "",
-                "P_UNIT_MAT_DB": p_unit_mat,
-                "P_UNIT_MAN_DB": p_unit_man,
+                "P_UNIT_MAT_DB": child.unit_price if child.type == "MAT" else 0,
+                "P_UNIT_MAN_DB": child.unit_price if child.type == "MAN" else 0,
                 "P_MAT_RDO": 0, "P_MAN_RDO": 0,
                 "P_UNIT_TOT_DB": child.unit_price * child.unit_quantity,
                 "P_UNIT_TOT_RDO": 0, "P_UNIT_DELTA": 0,
-                "P_TOT_DB": child_tot_db,
+                "P_TOT_DB": child_tot,
                 "P_TOT_RDO": 0, "P_TOT_DELTA": 0,
-                "STATO": "", "REASONING": ""
+                "STATO": "", "INTEGRITA": "", "REASONING": ""
             })
 
     # Creazione DataFrame

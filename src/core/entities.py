@@ -3,18 +3,19 @@ from typing import List, Optional
 
 @dataclass
 class QuoteComponentItem:
-    """Rappresenta una riga 'FIGLIO' nel preventivo."""
+    """Rappresenta una riga 'FIGLIO' nel preventivo (da Bill of Materials)."""
+    sku: str
     description: str
-    unit_quantity: float # qty_coefficient nel DB
-    unit_price: float
-    type: str # MAT o MAN
+    unit_quantity: float # Coefficiente tecnico
+    unit_price: float    # Prezzo al momento del calcolo
+    type: str           # MAT o MAN
     
     # Calcolati
     total_price: float = 0.0 # unit_price * unit_quantity * parent_qty
-    
+
 @dataclass
 class QuoteLineItem:
-    """Rappresenta una riga 'PADRE' nel preventivo."""
+    """Rappresenta una riga 'PADRE' nel preventivo (da Catalog Items)."""
     # Input
     row_index: int
     codice_input: str
@@ -26,10 +27,13 @@ class QuoteLineItem:
     p_mat_rdo: float = 0.0
     p_man_rdo: float = 0.0
     
-    # Match DB
-    match_id: Optional[int] = None
+    # Match DB (Nuovi campi deterministici)
+    match_id: Optional[int] = None # ID interno
+    match_sku: str = ""            # SKU Univoco
     match_description: str = ""
     source_file: str = ""
+    pricing_strategy: str = "UNKNOWN" # USE_DECLARED_PRICE / SUM_CHILDREN
+    integrity_status: str = "UNKNOWN" # VALID / DIRTY / BROKEN
     
     # Prezzi DB (Unitari)
     p_unit_mat_db: float = 0.0

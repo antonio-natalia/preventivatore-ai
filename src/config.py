@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # --- PROJECT PATHS ---
     PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     DATA_FOLDER: str = os.path.join(PROJECT_ROOT, "data")
-    DB_FILE: str = os.path.join(PROJECT_ROOT, "db", "preventivatore_v3_bulk.db")
+    DB_FILE: str = os.path.join(PROJECT_ROOT, "db", "preventivatore_v4.db")
     ORPHANS_FILE: str = os.path.join(PROJECT_ROOT, "data", "orphaned_components.csv")
 
     # --- API KEYS ---

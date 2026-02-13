@@ -1,6 +1,6 @@
 # AI Preventivatore MEP
 Questo repository ospita il motore di preventivazione intelligente per impianti MEP (Meccanici, Elettrici, Idraulici).
-Il sistema utilizza l'Intelligenza Artificiale (OpenAI GPT-4o + Vector Search) per digitalizzare richieste, trovare corrispondenze nel listino prezzi e generare preventivi dettagliati.
+Il sistema è stato evoluto da un modello statistico a un **Modello Ingegneristico Deterministico**, basato su Distinta Base (BOM) Relazionale. Utilizza l'Intelligenza Artificiale (OpenAI GPT-4o + Vector Search) per la ricerca semantica e la digitalizzazione, ma si affida a calcoli matematici rigorosi per la determinazione dei costi.
 
 ---
 
@@ -19,39 +19,99 @@ Punto di ingresso verso il mondo esterno. Attualmente ospita la CLI (`cli.py`).
 
 **2. Services (`src/services`)**
 Orchestratori della logica di business ("Application Layer"). Coordinano il flusso dei dati tra Infrastructure e Core.
-* *Esempi:* `QuoteService`, `IngestionService`, `DigitizationService`.
-* *Responsabilità:* Eseguire un caso d'uso (es. "Genera Preventivo", "Ingerisci Listino").
+* *Esempi:* `IngestionService` (Motore di Calcolo), `DigitizationService`.
+* *Responsabilità:* Eseguire un caso d'uso (es. "Ricalcola Costi", "Ingerisci Listino").
 
 **3. Core (`src/core`)**
-Il cuore del dominio ("Domain Layer"). Contiene la logica pura e le strutture dati. Non ha dipendenze esterne (DB, API).
-* *Esempi:* `QuoteLineItem` (DTO), Logica di Normalizzazione Semantica.
-* *Responsabilità:* Definire *cosa* è un preventivo e le regole di validazione.
+Il cuore del dominio ("Domain Layer"). Contiene la logica pura e le regole di validazione business.
+* *Responsabilità:* Definire le regole di integrità del grafo BOM e le strategie di pricing.
 
 **4. Infrastructure (`src/infrastructure`)**
 Implementazione tecnica dei dettagli ("Adapter Layer").
-* *Esempi:* `RecipeRepository` (SQLite), `OpenAIClient`, `ExcelWriter`, `VisionClient`.
-* *Responsabilità:* Parlare con il Database, scrivere file Excel, chiamare API esterne.
+* *Esempi:* `CatalogRepository` (SQLite Graph), `OpenAIClient`, `ExcelWriter`, `Parsers`.
+* *Responsabilità:* Parlare con il Database, scrivere file Excel, chiamare API esterne, parsing XML/Excel.
 
 ---
 
-## 🧠 Funzionalità Intelligenti (Core Features)
+## 🧠 Funzionalità Core (Motore Deterministico)
 
-### 1. Smart Pricing & Adaptive Learning
-Il sistema non si limita a copiare i prezzi di listino, ma calcola il prezzo "giusto" basandosi sulla storia.
-* **Logica:** `Weighted Average` (Media Ponderata) tra Prezzo Storico e Prezzo Nuovo.
-* **Shock Detection:** Se il nuovo prezzo devia >20% (`DEVIATION_THRESHOLD`), il sistema segnala un'anomalia (Shock) e aumenta l'indice di volatilità.
-* **Staleness Check:** Se un prezzo nel DB è più vecchio di 6 mesi (`STALENESS_DAYS`), il nuovo dato ha priorità massima (peso 90%).
+### 1. Motore di Calcolo Bottom-Up
+Il sistema abbandona le stime probabilistiche per un approccio rigoroso basato sulla struttura del prodotto.
+La regola fondamentale è: **"Il prezzo di un Padre è ESCLUSIVAMENTE la somma matematica dei prezzi dei suoi Figli"**.
+
+* **Identificazione Univoca (SKU):** Ogni articolo è identificato da uno SKU (Stock Keeping Unit) univoco. Non sono ammessi duplicati.
+* **Strategia di Pricing (BUY vs MAKE):** Ogni articolo ha un attributo `pricing_strategy` che pilota l'algoritmo:
+    * **`USE_DECLARED_PRICE` (BUY):** Risorse elementari (Foglie). Il prezzo viene letto direttamente dal listino fornitore o fattura.
+    * **`SUM_CHILDREN` (MAKE):** Articoli composti (Nodi). Il prezzo del file viene ignorato. Il costo è calcolato sommando `(Costo Figlio * Quantità)` ricorsivamente.
+* **Propagazione:** Una variazione di prezzo su una materia prima (es. Rame) innesca un ricalcolo a catena su tutti i semilavorati e prodotti finiti che la contengono.
 
 ### 2. Hybrid Search (Vector + AI Validation)
-La ricerca dei componenti non è una semplice query SQL `LIKE %...%`.
-1.  **Vettorizzazione:** Ogni descrizione viene trasformata in un vettore a 1536 dimensioni (`text-embedding-3-small`).
-2.  **Ricerca Semantica:** `sqlite-vec` trova i candidati più vicini per significato (es. "Interruttore" ≈ "Commutatore").
-3.  **AI Judge (GPT-4o):** Se la similarità è nella "zona grigia" (0.85 - 0.96), un modello LLM analizza tecnicamente se i due articoli sono intercambiabili.
+La ricerca dei componenti per la preventivazione utilizza tecniche avanzate di NLP.
+1.  **Vettorizzazione:** Ogni descrizione valida viene trasformata in un vettore a 1536 dimensioni (`text-embedding-3-small`).
+2.  **Ricerca Semantica:** `sqlite-vec` trova i candidati più vicini per significato.
+3.  **AI Judge (GPT-4o):** Se la similarità è ambigua, un LLM valuta l'intercambiabilità tecnica.
+4.  **Strict Validation:** Durante l'ingestion, articoli privi di descrizione vengono scartati alla fonte per mantenere alta la qualità del database vettoriale.
 
 ### 3. Vision Digitizer
 Trasforma file non strutturati (PDF scansionati, Immagini) in dati strutturati.
 * **Tecnologia:** OpenAI GPT-4o Vision + Code Interpreter.
-* **Processo:** L'AI "guarda" il PDF, estrae le tabelle visivamente e scrive un file Excel grezzo, che poi viene normalizzato semanticamente.
+* **Processo:** L'AI estrae le tabelle visivamente e normalizza i dati per il matching con il catalogo.
+
+---
+
+## 🗄 Architettura dei Dati (Schema Domain-Driven)
+
+Il database è stato rifattorizzato da una tabella piatta a un **Grafo Relazionale** per supportare la logica BOM.
+
+**TABELLA: `catalog_items` (Master Data)**
+Rappresenta i Nodi e le Foglie del grafo.
+* `sku` (PK): Codice univoco di business.
+* `pricing_strategy`: Il "semaforo" (`USE_DECLARED_PRICE` o `SUM_CHILDREN`).
+* `cost_integrity_status`: Stato di validità del calcolo.
+    * `VALID`: Prezzo allineato.
+    * `DIRTY`: In attesa di ricalcolo (dipendenza modificata).
+    * `BROKEN`: Calcolo impossibile (componenti mancanti).
+* `current_material_cost` / `current_labor_cost`: Costi separati per natura.
+
+**TABELLA: `bill_of_materials` (Topologia)**
+Rappresenta gli Archi del grafo.
+* `parent_sku`: Chi viene assemblato.
+* `child_sku`: Chi viene usato.
+* `usage_quantity`: Coefficiente tecnico.
+* *Nota:* Non contiene prezzi, solo relazioni strutturali.
+
+**TABELLA: `cost_history_log` (Audit Trail)**
+Traccia l'evoluzione temporale dei costi.
+* Registra se una variazione è dovuta a un nuovo listino (`IMPORT_UPDATE`) o a un ricalcolo automatico (`CALCULATION_CHANGE`).
+
+**TABELLA: `bom_integrity_errors` (Error Log)**
+Registra gli "Orfani": casi in cui un padre richiede uno SKU che non esiste nel database.
+
+---
+
+## ⚙️ Workflow di Ingestion (3 Fasi)
+
+Il caricamento di un nuovo listino (es. XML SIX/STR) non è lineare ma segue un processo a tre stadi per garantire la consistenza matematica.
+
+**FASE 1: STAGING (Upsert Anagrafiche)**
+* Il sistema carica tutti gli articoli dal file.
+* Filtra gli articoli senza descrizione (Quality Gate).
+* Genera/Aggiorna gli Embeddings vettoriali.
+* Se l'articolo è una Foglia (`USE_DECLARED`), aggiorna il prezzo.
+* Imposta lo stato di tutti gli item toccati a `DIRTY`.
+
+**FASE 2: WIRING (Cablaggio Struttura)**
+* Estrae la topologia (Analisi) dal file.
+* Cancella i vecchi legami per i padri coinvolti.
+* Scrive i nuovi legami nella tabella `bill_of_materials`.
+* Rileva errori di integrità: se un figlio manca, il padre viene marcato `BROKEN` e l'errore registrato in `bom_integrity_errors`.
+
+**FASE 3: COST ROLLUP (Calcolo Iterativo)**
+* Il motore identifica i nodi `DIRTY` che hanno tutte le dipendenze `VALID`.
+* Esegue il calcolo: `Totale = Somma(Prezzo_Figlio * Quantità)`.
+* Aggiorna il padre e lo promuove a `VALID`.
+* Ripete il ciclo risalendo l'albero (Bottom-Up) fino ai prodotti finiti.
+* Storicizza ogni variazione di prezzo.
 
 ---
 
@@ -59,93 +119,54 @@ Trasforma file non strutturati (PDF scansionati, Immagini) in dati strutturati.
 
     /preventivatore-ai
     │
-    ├── /data                   # Cartella dati (Input temporanei, Listini)
+    ├── /data                   # Input temporanei
     ├── /db                     # Database SQLite (preventivatore_v3_smart.db)
-    ├── /richieste_ordine       # Output del processo di digitalizzazione (JSON)
     │
     ├── /src                    # CODICE SORGENTE
-    │   ├── config.py           # Gestione Variabili d'Ambiente (Settings)
+    │   ├── config.py           # Settings
     │   │
-    │   ├── /core               # DOMAIN LAYER (Logica Pura & DTO)
-    │   │   ├── entities.py     # Definizioni Dati (QuoteLineItem, QuoteResult)
-    │   │   └── /normalizers    # Logica semantica per pulizia dati
+    │   ├── /core               # DOMAIN LAYER
+    │   │   └── entities.py     # Definizioni Dati
     │   │
-    │   ├── /infrastructure     # INFRA LAYER (Tecnologia)
-    │   │   ├── database.py     # Connessione DB & sqlite_vec
-    │   │   ├── repositories.py # Query SQL incapsulate
-    │   │   ├── ai_client.py    # Wrapper OpenAI (Chat & Embedding)
-    │   │   ├── vision_client.py# Wrapper GPT-4o Vision (OCR)
-    │   │   ├── excel_writer.py # Generazione Excel Output
-    │   │   └── parsers.py      # Lettura input (JSON, Excel, XML)
+    │   ├── /infrastructure     # INFRA LAYER
+    │   │   ├── schema.py       # DDL Database (Schema aggiornato)
+    │   │   ├── repositories.py # Query Graph & Rollup Logic
+    │   │   ├── parsers.py      # XML Topology Extraction
+    │   │   └── ai_client.py    # OpenAI Client
     │   │
-    │   ├── /services           # APPLICATION LAYER (Orchestratori)
-    │   │   ├── ingestion_service.py    # Caricamento listini nel DB
-    │   │   ├── digitization_service.py # PDF -> JSON
-    │   │   └── quote_service.py        # JSON -> Logica Matching -> DTO
+    │   ├── /services           # APPLICATION LAYER
+    │   │   ├── ingestion_service.py    # Orchestratore Ingestion 3-Fasi
+    │   │   └── digitization_service.py # PDF -> JSON
     │   │
     │   └── /interfaces         # ENTRY POINTS
-    │       └── cli.py          # Command Line Interface unificata
+    │       └── cli.py          # CLI Unificata
     │
-    ├── .env                    # Chiavi API e Configurazione locale
-    └── requirements.txt        # Dipendenze Python
+    └── requirements.txt        # Dipendenze
 
 ---
 
 ## 🚀 Guida Operativa (CLI)
 
-Tutte le operazioni passano attraverso un unico punto di ingresso: `src/interfaces/cli.py`.
+### 1. Ingestion Listini - Supporto Multi-Formato (XML/Excel)
+Il sistema di Ingestion è in grado di normalizzare input eterogenei mantenendo la struttura gerarchica:
+* **XML (SIX/STR):** Supporto nativo per lo standard di interscambio edilizio. Estrae codici, descrizioni estese e l'intera struttura BOM nidificata.
+* **Excel Gerarchico (.xlsx):** Supporto avanzato per file di computo (ex formato legacy). Riconosce automaticamente la struttura "Padre -> Componenti" basandosi sulla posizione delle righe e delle colonne (Articolo, Descrizione, P_COMP, Q_COMP).
+    * *SKU Sintetici:* Per i componenti Excel privi di codice, il sistema genera automaticamente un ID univoco (Hash MD5) per permetterne il riutilizzo e la tracciabilità nel database.
 
-### 1. Ingestion Listini (Aggiornamento Database)
-Carica nuovi listini (Excel o XML SIX/STR) nel database vettoriale.
+### 2. Digitalizzazione Input
+Trasforma PDF/Immagini in JSON strutturato.
 
-    # Per file XML (SIX/STR)
-    python src/interfaces/cli.py ingest --file data/listino_2024.xml --type xml
+    python src/interfaces/cli.py digitize --file data/richiesta.pdf --deep-scan
 
-    # Per file Excel standard
-    python src/interfaces/cli.py ingest --file data/listino_privato.xlsx --type excel
+### 3. Generazione Preventivo
+Crea il file Excel finale basandosi sui costi calcolati nel DB.
 
-### 2. Digitalizzazione Input (PDF -> JSON)
-Trasforma una Richiesta di Offerta (PDF, Immagine o Excel grezzo) in un formato JSON strutturato e normalizzato.
-
-    # Estrazione da PDF (OCR + Normalizzazione)
-    python src/interfaces/cli.py digitize --file data/richiesta_cliente.pdf --deep-scan
-
-*Output:* Genera un file JSON in `/richieste_ordine/richiesta_cliente_clean.json`.
-
-### 3. Generazione Preventivo (JSON -> Excel)
-Il cuore del sistema. Prende il JSON generato al passo 2, cerca i match nel DB, valida con l'AI e genera l'Excel finale.
-
-    # Generazione Standard
-    python src/interfaces/cli.py quote --file richieste_ordine/richiesta_cliente_clean.json --output preventivi/offerta_finale.xlsx
-
-    # Generazione "Solo Manodopera" (Modalità Installazione)
-    python src/interfaces/cli.py quote --file richieste_ordine/richiesta_clean.json --output preventivi/offerta_manodopera.xlsx --solo-manodopera
+    python src/interfaces/cli.py quote --file richieste/clean.json --output preventivi/offerta.xlsx
 
 ---
 
-## 🛠 Guida allo Sviluppo
+## 🛠 Gestione Errori e Conflitti
 
-### Regole d'Oro per la Manutenzione
-
-1.  **No Logic in IO:** Il `Service` non deve mai scrivere su disco o stampare a video direttamente (tranne log). Restituisce DTO. L'`Infrastructure` si occupa di salvare.
-2.  **No SQL in Service:** Il `Service` non deve mai contenere stringhe SQL. Chiama i metodi di `RecipeRepository`.
-
-### Setup Ambiente di Sviluppo
-
-**1. Virtual Env:**
-
-    python -m venv venv
-    # Windows:
-    venv\Scripts\activate
-    # Mac/Linux:
-    source venv/bin/activate
-
-**2. Dipendenze:**
-
-    pip install -r requirements.txt
-
-**3. Variabili d'Ambiente:**
-Crea un file `.env` nella root:
-
-    OPENAI_API_KEY=sk-proj-....
-    DB_FILE=db/preventivatore_v3_smart.db
+* **Orfani:** Se un componente richiesto non esiste nel DB o nel file corrente, il padre viene marcato come `BROKEN`. Il sistema non "inventa" prezzi per riempire i buchi.
+* **Descrizioni Mancanti:** Gli item senza descrizione nel listino sorgente vengono scartati silenziosamente in fase di Staging (con conteggio nel report finale) per evitare errori nelle API AI.
+* **Cicli Infiniti:** Il calcolo a livelli (dependency resolution) previene loop infiniti (A contiene B contiene A), interrompendo il calcolo per quei rami.
