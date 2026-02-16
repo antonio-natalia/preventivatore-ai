@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Python e Ambienti Virtuali
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# File di Configurazione Locali e Segreti
+.env
+.env.local
+
+# Database Locali (Il DB in cloud sarà su Azure Files, non nell'immagine)
+*.db
+*.sqlite
+*.sqlite3
+manufacturing.db
+
+# Dati di test e Documentazione
+docs/
+tests/
+*.pdf
+*.xlsx
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+Dockerfile
+.dockerignore

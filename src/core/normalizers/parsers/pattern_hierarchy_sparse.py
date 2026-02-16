@@ -1,4 +1,5 @@
 import pandas as pd
+from typing import List
 from .base import BaseParser
 from ..base import VoceComputoMetric # Import corretto del modello
 
