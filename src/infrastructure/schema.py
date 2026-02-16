@@ -59,7 +59,10 @@ def init_domain_schema(connection: sqlite3.Connection):
             FOREIGN KEY(parent_sku) REFERENCES catalog_items(sku) ON DELETE CASCADE,
             FOREIGN KEY(child_sku) REFERENCES catalog_items(sku) ON DELETE RESTRICT,
             
-            -- Unicità della relazione (non posso avere due volte lo stesso figlio nello stesso padre)
+            -- VINCOLO DI UNICITÀ (RIPRISTINATO)
+            -- Una specifica coppia Padre-Figlio deve essere univoca.
+            -- Se il listino contiene duplicati, devono essere risolti (deduplicati)
+            -- prima dell'inserimento nel DB (logica Last Write Wins).
             UNIQUE(parent_sku, child_sku)
         )
     ''')
@@ -116,9 +119,27 @@ def init_domain_schema(connection: sqlite3.Connection):
         # Gestisce il caso in cui l'estensione non sia caricata o la tabella esista già in modo incompatibile
         print("⚠️  Attenzione: Estensione vettoriale non disponibile o tabella già esistente.")
         pass
+        
+    # ---------------------------------------------------------
+    # 6. BOM_HISTORY_LOG (Storico Versionamento Distinte)
+    # Salva le vecchie versioni delle BOM prima che vengano sovrascritte.
+    # ---------------------------------------------------------
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bom_history_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_sku TEXT NOT NULL,
+            child_sku TEXT NOT NULL,
+            usage_quantity REAL,
+            
+            archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            replaced_by_source_file TEXT,
+            
+            FOREIGN KEY(parent_sku) REFERENCES catalog_items(sku)
+        )
+    ''')
 
     # ---------------------------------------------------------
-    # 6. INDICI PER PERFORMANCE
+    # 7. INDICI PER PERFORMANCE
     # Fondamentali per velocizzare i JOIN ricorsivi durante il calcolo costi.
     # ---------------------------------------------------------
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_catalog_sku ON catalog_items(sku);")

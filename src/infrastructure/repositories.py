@@ -60,9 +60,31 @@ class CatalogRepository:
             self.cursor.execute("DELETE FROM vec_catalog_items WHERE rowid = ?", (row_id,))
             self.cursor.execute("INSERT INTO vec_catalog_items(rowid, embedding) VALUES (?, ?)", (row_id, embedding))
 
-    def replace_bom_links(self, parent_sku: str, children_links: List[Tuple[str, float]]):
-        """Riscrive completamente la distinta base (BOM) per un padre."""
+    def archive_bom_snapshot(self, parent_sku: str, replaced_by_source: str):
+        """
+        Copia la distinta base corrente di un articolo nella tabella di history
+        prima che venga sovrascritta.
+        """
+        sql_archive = """
+            INSERT INTO bom_history_log (parent_sku, child_sku, usage_quantity, replaced_by_source_file)
+            SELECT parent_sku, child_sku, usage_quantity, ?
+            FROM bill_of_materials
+            WHERE parent_sku = ?
+        """
+        self.cursor.execute(sql_archive, (replaced_by_source, parent_sku))
+
+    def replace_bom_links(self, parent_sku: str, children_links: List[Tuple[str, float]], source_file: str = "UNKNOWN"):
+        """
+        Riscrive completamente la distinta base (BOM) per un padre.
+        Prima di cancellare, archivia la versione precedente nel log storico.
+        """
+        # 1. Archiviazione Snapshot
+        self.archive_bom_snapshot(parent_sku, source_file)
+
+        # 2. Cancellazione Vecchia BOM
         self.cursor.execute("DELETE FROM bill_of_materials WHERE parent_sku = ?", (parent_sku,))
+        
+        # 3. Inserimento Nuova BOM
         if children_links:
             data_to_insert = [(parent_sku, child_sku, quantity) for child_sku, quantity in children_links]
             self.cursor.executemany(
@@ -86,7 +108,7 @@ class CatalogRepository:
         """, (sku, material_cost, labor_cost, event_type, source_context))
 
     # =========================================================================
-    # ENGINE & CALCULATION
+    # ENGINE & CALCULATION (Quelli che mancavano e causavano l'errore)
     # =========================================================================
 
     def mark_leaves_as_valid(self):
@@ -156,8 +178,13 @@ class CatalogRepository:
     def search_pure_vector(self, query_vec: bytes, limit: int = 5):
         """
         Cerca nella tabella CATALOG_ITEMS usando vettori.
+        Usato da: QuoteService.
         Ritorna: list of tuples (id, distance, desc, p_mat, p_man, source, sku, strategy, status)
         """
+        # Join tra vec_catalog_items e catalog_items
+        # Nota: description_full viene costruita a runtime o letta se salvata. 
+        # Nel DDL abbiamo salvato description_long e description_short.
+        # Costruiamo una descrizione combinata per l'output.
         sql = """
             SELECT 
                 c.id, 
@@ -178,7 +205,10 @@ class CatalogRepository:
         return self.cursor.fetchall()
 
     def search_sonar_vectors(self, query_vec: bytes, limit: int = 5):
-        """Query specifica per Sonar TUI."""
+        """
+        Query specifica per Sonar TUI.
+        Recupera campi per visualizzazione deterministica.
+        """
         sql = """
             SELECT 
                 c.id, 
@@ -187,8 +217,8 @@ class CatalogRepository:
                 c.current_material_cost, 
                 c.current_labor_cost, 
                 c.source_file_origin,
-                c.pricing_strategy,
-                c.cost_integrity_status,
+                c.pricing_strategy,        -- Al posto di volatility
+                c.cost_integrity_status,   -- Al posto di is_complex
                 v.distance,
                 c.last_update_timestamp
             FROM vec_catalog_items v
@@ -199,21 +229,26 @@ class CatalogRepository:
         self.cursor.execute(sql, (query_vec, limit))
         
         results = []
+        # Mapping colonne -> dict per TUI
         cols = ["id", "sku", "description", "current_material_cost", "current_labor_cost", 
                 "source_file", "pricing_strategy", "cost_integrity_status", "distance", "last_update_timestamp"]
+        
         for row in self.cursor.fetchall():
             results.append(dict(zip(cols, row)))
         return results
 
     def get_components(self, parent_item_id: int):
-        """Recupera i figli esplodendo la BOM partendo dall'ID interno."""
-        # 1. Recupera SKU
+        """
+        Recupera i figli esplodendo la BOM.
+        Usato da: QuoteService (Drill-down).
+        """
+        # 1. Recupera SKU del padre dall'ID
         self.cursor.execute("SELECT sku FROM catalog_items WHERE id = ?", (parent_item_id,))
         row = self.cursor.fetchone()
         if not row: return []
         parent_sku = row[0]
 
-        # 2. Join BOM -> Catalog Items
+        # 2. Join BOM -> Catalog Items (Figli)
         sql = """
             SELECT 
                 child.sku,
@@ -243,3 +278,6 @@ class CatalogRepository:
         cols = [column[0] for column in self.cursor.description]
         row = self.cursor.fetchone()
         return dict(zip(cols, row)) if row else None
+    
+    # Metodo alias per compatibilità con vecchio codice (se esiste)
+    find_similar_vectors = search_pure_vector

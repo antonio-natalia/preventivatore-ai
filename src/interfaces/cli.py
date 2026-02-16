@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import logging
+import sqlite3
 
 # 1. Setup Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -30,62 +31,62 @@ def main():
     
     # --- COMMAND: INGEST ---
     ingest_parser = subparsers.add_parser("ingest", help="Importa file (XML/Excel) o intere cartelle")
-    ingest_parser.add_argument("--file", required=True, help="Percorso del file singolo o della cartella da processare")
-    ingest_parser.add_argument("--type", choices=["auto"], default="auto", help="Tipo di file (default: auto-detect)")
-    
-    # --- COMMAND: DIGITIZE ---
-    digit_parser = subparsers.add_parser("digitize", help="Digitalizza PDF/Immagini")
-    digit_parser.add_argument("--file", required=True, help="File input (PDF/JPG)")
-    digit_parser.add_argument("--deep-scan", action="store_true", help="Abilita OCR avanzato (Vision)")
+    ingest_parser.add_argument("file", help="Percorso del file singolo o della cartella da processare")
     
     # --- COMMAND: QUOTE ---
-    quote_parser = subparsers.add_parser("quote", help="Genera Preventivo Excel")
-    quote_parser.add_argument("--file", required=True, help="JSON richiesta normalizzata")
-    quote_parser.add_argument("--output", required=True, help="Path Excel output")
-    quote_parser.add_argument("--solo-manodopera", action="store_true", help="Azzera costi materiali")
+    quote_parser = subparsers.add_parser("quote", help="Genera preventivo da JSON")
+    quote_parser.add_argument("input", help="File JSON input")
+    quote_parser.add_argument("output", help="File Excel output")
+    quote_parser.add_argument("--solo-manodopera", action="store_true", help="Calcola solo ore lavoro")
 
     # --- COMMAND: SONAR ---
-    subparsers.add_parser("sonar", help="Avvia interfaccia di ricerca vettoriale")
+    subparsers.add_parser("sonar", help="Interfaccia TUI per esplorazione vettoriale")
 
     # --- COMMAND: INIT-DB ---
-    subparsers.add_parser("init-db", help="Inizializza/Aggiorna schema Database")
-
+    subparsers.add_parser("init-db", help="Inizializza il Database vuoto")
+    
     # --- COMMAND: CHECK ---
-    subparsers.add_parser("check", help="Esegue diagnostica sulla qualità dei dati")
+    subparsers.add_parser("check", help="Esegue diagnostica sistema")
 
     args = parser.parse_args()
 
     if args.command == "ingest":
+        print(f"🚀 Avvio Ingestion... (File: {args.file})")
+        conn = get_db_connection()
+        
+        # --- FIX: Inizializzazione Automatica Schema ---
+        # Se il DB è nuovo/vuoto, crea le tabelle prima di procedere
+        init_domain_schema(conn)
+        # -----------------------------------------------
+        
+        repo = CatalogRepository(conn)
+        service = IngestionService(repo)
         try:
-            conn = get_db_connection()
-            repo = CatalogRepository(conn)
-            service = IngestionService(repo)
-            
-            # USIAMO PROCESS_PATH per supportare sia file che cartelle
             service.process_path(args.file)
-            
-            conn.close()
+        except KeyboardInterrupt:
+            print("\n🛑 Ingestion interrotta dall'utente.")
         except Exception as e:
+            # Per debugging approfondito se serve
+            # import traceback
+            # traceback.print_exc()
             print(f"❌ Errore Ingestion: {e}")
-            import traceback
-            traceback.print_exc()
-
-    elif args.command == "digitize":
-        try:
-            service = DigitizationService()
-            output_path = service.process_document(args.file, deep_scan=args.deep_scan)
-            print(f"✅ Digitalizzazione completata: {output_path}")
-        except Exception as e:
-            print(f"❌ Errore Digitalizzazione: {e}")
+        finally:
+            conn.close()
 
     elif args.command == "quote":
+        print(f"💰 Calcolo Preventivo... (Input: {args.input})")
         try:
-            raw_data = load_json_input(args.file)
+            raw_data = load_json_input(args.input)
             if not raw_data:
                 print("❌ Errore: File input vuoto o non valido.")
                 return
 
             conn = get_db_connection()
+            
+            # --- FIX: Inizializzazione Automatica Schema ---
+            init_domain_schema(conn)
+            # -----------------------------------------------
+            
             repo = CatalogRepository(conn)
             service = QuoteService(repo)
             
@@ -101,6 +102,12 @@ def main():
 
     elif args.command == "sonar":
         try:
+            # Nota: SonarTUI gestisce la connessione internamente, 
+            # ma è buona norma assicurarsi che il DB esista.
+            conn = get_db_connection()
+            init_domain_schema(conn)
+            conn.close()
+            
             app = SonarTUI()
             app.run()
         except KeyboardInterrupt:
