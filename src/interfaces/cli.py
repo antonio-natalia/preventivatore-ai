@@ -63,7 +63,7 @@ def main():
         parser.print_help()
         return
 
-    logger.info(f"CLI Command Started: {args.command}", extra={"args": vars(args)})
+    logger.info(f"CLI Command Started: {args.command}", extra={"command_args": vars(args)})
 
     try:
         if args.command == "ingest":

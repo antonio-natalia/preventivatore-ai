@@ -15,6 +15,7 @@ richieste_ordine/
 input_preventivi/
 preventivi/
 listini/
+data/
 
 # --- PYTHON & AMBIENTE ---
 __pycache__/
