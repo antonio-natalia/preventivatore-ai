@@ -1,12 +1,13 @@
 import os
 import time
 import base64
-import pandas as pd
-from io import BytesIO
+import logging
 from openai import OpenAI
 from src.config import settings
+from src.infrastructure.telemetry import track_phase, log_metric
 
-# Inizializza client (Singleton da settings/infra)
+# Recupera logger esistente
+logger = logging.getLogger("preventivatore_ai")
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
 # --- PROMPT DIGITIZER ---
@@ -33,91 +34,106 @@ Soltanto il file "raw_input.xlsx".
 
 MODEL_DIGITIZER = "gpt-4o-mini"
 
-def run_digitizer_task(file_path: str, output_excel_path: str):
+@track_phase(phase_name="vision_digitization_task")
+def run_digitizer_task(pdf_path: str, output_excel_path: str) -> bool:
     """
-    Refactoring di 'run_assistant_task' mantenendo la logica 1:1.
-    Gestisce upload file, creazione assistant e download risultato.
+    Esegue il task di digitalizzazione usando OpenAI Assistants API.
+    Monitorato da telemetria (durata totale e tentativi di polling).
     """
-    print(f"👁️  Avvio Digitizer (Vision) su: {os.path.basename(file_path)}")
-    
-    # 1. Caricamento File (Logic 1:1)
-    try:
-        with open(file_path, "rb") as f:
-            uploaded_file = client.files.create(
-                file=f,
-                purpose='assistants'
-            )
-        file_id = uploaded_file.id
-    except Exception as e:
-        print(f"❌ Errore upload file: {e}")
+    if not os.path.exists(pdf_path):
+        logger.error(f"File non trovato: {pdf_path}")
         return False
 
-    # 2. Creazione Assistant (Logic 1:1)
-    assistant = client.beta.assistants.create(
-        name="Excel Digitizer Worker",
-        instructions=PROMPT_DIGITIZER,
-        model=MODEL_DIGITIZER,
-        tools=[{"type": "code_interpreter"}],
-        tool_resources={
-            "code_interpreter": {
-                "file_ids": [file_id]
-            }
-        }
-    )
-
-    # 3. Thread & Run (Logic 1:1)
-    thread = client.beta.threads.create()
-    
-    run = client.beta.threads.runs.create(
-        thread_id=thread.id,
-        assistant_id=assistant.id
-    )
-
-    # 4. Polling Loop (Logic 1:1)
-    print("⏳ Waiting for Digitizer...")
-    while True:
-        run_status = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-        if run_status.status == 'completed':
-            break
-        elif run_status.status in ['failed', 'cancelled', 'expired']:
-            print(f"❌ Run fallita: {run_status.status}")
-            # Cleanup
-            client.files.delete(file_id)
-            client.beta.assistants.delete(assistant.id)
-            return False
-        time.sleep(2) # Polling interval originale? Assumo 2s standard
-
-    # 5. Recupero File Generato (Logic 1:1)
-    messages = client.beta.threads.messages.list(thread_id=thread.id)
-    file_generated_id = None
-    
-    # Cerca l'ultimo file annotato nei messaggi
-    for msg in messages.data:
-        if msg.role == "assistant" and msg.content:
-            for content_block in msg.content:
-                if content_block.type == 'text' and content_block.text.annotations:
-                    for ann in content_block.text.annotations:
-                        if ann.type == 'file_path':
-                            file_generated_id = ann.file_path.file_id
-                            break
-            if file_generated_id: break
-    
-    if file_generated_id:
-        # Download
-        file_content = client.files.content(file_generated_id)
-        with open(output_excel_path, "wb") as f:
-            f.write(file_content.read())
-        print(f"✅ Excel Grezzo generato: {output_excel_path}")
-        result = True
-    else:
-        print("❌ Nessun file Excel generato dall'Assistant.")
-        result = False
-
-    # 6. Cleanup (Logic 1:1)
     try:
-        client.files.delete(file_id)
-        if file_generated_id: client.files.delete(file_generated_id)
-        client.beta.assistants.delete(assistant.id)
-    except: pass
+        # 1. Upload File
+        logger.info(f"Uploading file to OpenAI: {os.path.basename(pdf_path)}")
+        file_obj = client.files.create(
+            file=open(pdf_path, "rb"),
+            purpose='assistants'
+        )
+        file_id = file_obj.id
 
-    return result
+        # 2. Creazione Assistant Temporaneo
+        assistant = client.beta.assistants.create(
+            name="PDF_Digitizer_Worker",
+            instructions=PROMPT_DIGITIZER,
+            model=MODEL_DIGITIZER,
+            tools=[{"type": "code_interpreter"}]
+        )
+
+        # 3. Creazione Thread e Run
+        thread = client.beta.threads.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Esegui l'estrazione delle tabelle da questo file.",
+                    "attachments": [{"file_id": file_id, "tools": [{"type": "code_interpreter"}]}]
+                }
+            ]
+        )
+        
+        run = client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=assistant.id
+        )
+
+        # 4. Polling Loop
+        attempts = 0
+        while run.status not in ["completed", "failed", "cancelled"]:
+            attempts += 1
+            if attempts % 5 == 0:
+                logger.info(f"Waiting for Assistant... (Attempt {attempts})")
+            
+            time.sleep(2)
+            run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+            
+            if run.status == "failed":
+                logger.error(f"Assistant Run Failed: {run.last_error}")
+                # Cleanup parziale
+                client.files.delete(file_id)
+                client.beta.assistants.delete(assistant.id)
+                return False
+        
+        # Metrica: Quanti cicli di attesa?
+        log_metric("vision_polling_attempts", attempts, {"model": "gpt-4o"})
+
+        # 5. Recupero File Generato
+        messages = client.beta.threads.messages.list(thread_id=thread.id)
+        file_generated_id = None
+        
+        for msg in messages.data:
+            if msg.role == "assistant" and msg.content:
+                for content_block in msg.content:
+                    if content_block.type == 'text' and content_block.text.annotations:
+                        for ann in content_block.text.annotations:
+                            if ann.type == 'file_path':
+                                file_generated_id = ann.file_path.file_id
+                                break
+                if file_generated_id: break
+        
+        result = False
+        if file_generated_id:
+            logger.info("Downloading generated Excel file...")
+            file_content = client.files.content(file_generated_id)
+            with open(output_excel_path, "wb") as f:
+                f.write(file_content.read())
+            logger.info(f"Excel salvato in: {output_excel_path}")
+            result = True
+        else:
+            logger.warning("Nessun file Excel generato dall'Assistant.")
+
+        # 6. Cleanup
+        try:
+            client.files.delete(file_id)
+            if file_generated_id:
+                client.files.delete(file_generated_id)
+            client.beta.assistants.delete(assistant.id)
+            client.beta.threads.delete(thread.id)
+        except Exception as cleanup_err:
+            logger.warning(f"Errore minore durante cleanup: {cleanup_err}")
+
+        return result
+
+    except Exception as e:
+        logger.exception(f"Critical Error in Digitizer Task: {e}")
+        return False

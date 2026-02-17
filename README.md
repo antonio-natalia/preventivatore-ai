@@ -20,15 +20,15 @@ Il progetto segue i principi della **Clean Architecture** e del **Domain-Driven 
 * **Data Processing:** Pandas (ETL Excel), Pydantic (Validazione Dati).
 * **Interface:** CLI (Command Line Interface) nativa.
 
-### Design Patterns & Cavilli Implementativi
-* **Repository Pattern:** L'accesso ai dati è astratto in `src/infrastructure/repositories.py`. Il codice di business non tocca mai l'SQL direttamente.
-* **Recursive CTE (Common Table Expressions):** Il calcolo dei costi (`calculate_node_cost`) utilizza query SQL ricorsive per attraversare l'albero della BOM a profondità arbitraria in millisecondi.
-* **Idempotenza & Last-Write-Wins:** L'ingestion è progettata per essere eseguita `N` volte senza corrompere i dati. Se un listino ridefinisce un articolo, l'ultima versione sovrascrive la precedente (Deduplicazione a Dizionario prima del DB).
-* **Unique Constraints:** Il DB impone vincoli stretti (`UNIQUE(parent_sku, child_sku)`) nella tabella `bill_of_materials` per impedire duplicati fisici e garantire l'integrità del grafo.
+### Osservabilità & Telemetria (Cloud Native)
+Il sistema implementa uno stack di telemetria pronto per Azure Container Apps:
+* **Structured Logging (JSON):** Se `APP_ENV=CLOUD`, i log vengono emessi in JSON con campi contestuali (`trace_id`, `timestamp`, `level`) per l'ingestion automatica in Azure Log Analytics.
+* **Distributed Tracing:** Ogni esecuzione CLI accetta un `--trace-id`. Questo permette di correlare processi disgiunti (es. Digitization -> Quotation) orchestrati da Power Automate come un'unica transazione di business.
+* **Metrics:** Decoratori Python (`@track_phase`) misurano automaticamente la durata delle fasi critiche e il consumo di token OpenAI, esponendo metriche chiave per i KPI.
 
 ### Struttura del Progetto
 * `src/core`: Entità di dominio e interfacce astratte.
-* `src/infrastructure`: Implementazioni concrete (SQLite, OpenAI, Excel Parsers).
+* `src/infrastructure`: Implementazioni concrete (SQLite, OpenAI, Excel Parsers, Telemetry).
 * `src/services`: Logica applicativa (Orchestrazione flussi).
 * `src/interfaces`: Punti di ingresso (CLI, TUI Sonar).
 
@@ -106,11 +106,11 @@ Un'interfaccia grafica da terminale che permette di:
     * **Carica Listino:**
         `python src/interfaces/cli.py ingest "docs/listino_2025.xlsx"`
     
-    * **Digitalizza PDF:**
-        `python src/interfaces/cli.py digitize --input "richiesta.pdf" --output "richiesta.json"`
+    * **Digitalizza PDF (con Tracing):**
+        `python src/interfaces/cli.py digitize --input "rdo.pdf" --output "rdo.json" --trace-id "REQ-001"`
     
-    * **Fai Preventivo:**
-        `python src/interfaces/cli.py quote "richiesta.json" "preventivo_output.xlsx"`
+    * **Fai Preventivo (collega al processo precedente):**
+        `python src/interfaces/cli.py quote "rdo.json" "prev.xlsx" --trace-id "REQ-001"`
         
     * **Apri Sonar:**
         `python src/interfaces/cli.py sonar`
