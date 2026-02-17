@@ -1,0 +1,46 @@
+# infra/preventivatore.yaml
+location: italynorth
+properties:
+  environmentId: ${ENV_ID}
+  configuration:
+    triggerType: Manual
+    replicaTimeout: 1800
+    replicaRetryLimit: 0
+    manualTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+    secrets:
+      - name: openai-api-key
+        value: ${OPENAI_API_KEY}
+      - name: acr-password
+        value: ${ACR_PASSWORD}
+    registries:
+      - server: acrprev14340.azurecr.io
+        username: acrprev14340
+        passwordSecretRef: acr-password
+  template:
+    containers:
+      - image: acrprev14340.azurecr.io/preventivatore:v1
+        name: preventivatore
+        command: ["python"]
+        args: ["-m", "src.interfaces.cli", "check"]
+        resources:
+          cpu: 1.0
+          memory: 2.0Gi
+        env:
+          - name: OPENAI_API_KEY
+            secretRef: openai-api-key
+          - name: APP_ENV
+            value: CLOUD
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          # Configurazione Standard per Cloud
+          - name: DB_FILE
+            value: "/mnt/data/preventivatore_v4.db"
+        volumeMounts:
+          - volumeName: volume-dati
+            mountPath: /mnt/data
+    volumes:
+      - name: volume-dati
+        storageName: share-dati
+        storageType: AzureFile
