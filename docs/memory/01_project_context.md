@@ -20,6 +20,11 @@ Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (C
     1.  Il comando riceve un percorso a un file o una directory.
     2.  Invoca `IngestionService`.
     3.  Il servizio analizza il file, ne normalizza il contenuto e lo utilizza per popolare o aggiornare le tabelle `catalog_items` e `bill_of_materials` tramite il `CatalogRepository`.
+-   **Logiche di Business dell'Ingestione:**
+    -   **Parsing Adattivo:** Riconosce automaticamente diversi formati di file Excel (es. "Item-Based", posizionale) ispezionando le prime righe del file.
+    -   **Filtro Qualità:** Scarta le voci del catalogo che non hanno una descrizione completa.
+    -   **Deduplicazione Distinte Base:** Se una relazione padre-figlio è definita più volte, viene considerata valida solo l'ultima occorrenza ("Last Write Wins").
+    -   **Cost Roll-up Iterativo:** Calcola i costi partendo dagli articoli "foglia" (materiali base) e risalendo iterativamente il grafo per calcolare i costi degli assiemi.
 
 ### 2. Digitalizzazione Documento (`digitize`)
 -   **Comando:** `python -m src.interfaces.cli digitize --input <input_file> --output <output_json>`
@@ -39,6 +44,16 @@ Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (C
     3.  Il servizio interagisce con il `CatalogRepository` per trovare corrispondenze nel catalogo, recuperare i costi e esplodere le distinte base.
     4.  Il risultato (`QuoteResult`) viene passato a `write_quote_dto_to_excel` per generare il file finale.
     5.  Il flag `--solo-manodopera` permette di generare un preventivo calcolando solo i costi di manodopera.
+-   **Logiche di Business del Pricing:**
+    -   **Matching a 3 Livelli:**
+        1.  **Auto-Match:** Se la similarità semantica è > 96%, il match è automatico.
+        2.  **Rifiuto Automatico:** Se la similarità è < 60%, la voce è scartata.
+        3.  **Giudizio AI:** Per valori intermedi, un modello GPT valuta i candidati e seleziona il migliore, agendo come un esperto di dominio.
+    -   **Fallback su Errore AI:** In caso di errore del servizio AI, il sistema accetta il candidato migliore con un `WARNING` se la similarità è alta, altrimenti lo scarta.
+    -   **Esplosione Distinta Base:** Per gli articoli "assieme", il servizio recupera ed elenca tutti i sotto-componenti (figli) nel preventivo.
+-   **Formato di Output (Excel):**
+    -   Il file Excel generato contiene due fogli: `Preventivo` e `Metriche`.
+    -   Nel foglio `Preventivo`, la gerarchia è rappresentata da una colonna `"TIPO"` che distingue le righe `"PADRE"` (voci principali) dalle righe `"FIGLIO"` (componenti della distinta base).
 
 ### 4. Utility
 -   **`init-db`**: Inizializza lo schema del database da zero, creando tutte le tabelle.
