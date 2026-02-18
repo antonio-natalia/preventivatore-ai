@@ -70,21 +70,39 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
         5.  Env Vars: `APP_ENV=CLOUD`, `OPENAI_API_KEY=secretref:openai-api-key`.
         6.  Resources: CPU 1.0, Memory 2.0Gi.
 
-### 3. Orchestration (Power Automate)
+### 3. Orchestration and User Workflow (MVP)
 
-- [ ] **[ORCH-01] Power Automate Logic Definition**
-    * **Obiettivo:** Documentare (o esportare JSON) il flusso logico per l'implementazione sul tenant del cliente.
-    * **Specifiche:**
-        1.  **Trigger:** SharePoint "When a file is created (properties only)" -> Cartella `Input`.
-        2.  **Action 1:** "Get file content" (SharePoint).
-        3.  **Action 2:** "Create file" (Azure File Storage) -> Path `/input/{filename}`.
-        4.  **Action 3 (HTTP Premium):** POST verso Azure Container Apps Job execution endpoint.
-            * Auth: Managed Identity o Token.
-            * Body: `{"args": ["digitize", "--input", "/mnt/data/input/{filename}", "--output", "/mnt/data/temp/{filename}.json"]}`.
-        5.  **Action 4 (HTTP Premium):** POST (secondo job per 'quote') o catena di comandi.
-        6.  **Action 5:** Polling/Delay loop in attesa del file in `/output`.
-        7.  **Action 6:** "Create file" (SharePoint) -> Cartella `Output`.
-        8.  **Action 7:** Teams Notification.
+- [ ] **[MVP-01] Implementazione Pipeline di Automazione con Report Analitico**
+    * **User Story:**
+        > Come Specialista Preventivi, voglio depositare un file di Computo Metrico in una cartella SharePoint e ricevere automaticamente un report analitico dettagliato in una cartella di output, così da poter vedere come l'AI ha processato il documento senza eseguire codice manualmente.
+    * **Criteri di Accettazione:**
+        1.  Due cartelle SharePoint sono configurate: `_1_INPUT` e `_2_OUTPUT`.
+        2.  Un flusso Power Automate viene creato, attivato dall'aggiunta di un nuovo file nella cartella `_1_INPUT`.
+        3.  Il flusso invoca un servizio di backend che esegue i comandi esistenti `digitize` e `quote` sul file di input.
+        4.  Il servizio di backend genera il report Excel analitico standard usando l'attuale `excel_writer.py`.
+        5.  Il file Excel risultante viene salvato nella cartella `_2_OUTPUT`.
+        6.  Una notifica di successo viene inviata via Microsoft Teams all'utente che ha caricato il file, contenente un link al report di output.
+        7.  Una notifica di errore viene inviata se il processo fallisce.
+    * **Note di Implementazione:**
+        -   Il servizio di backend dovrebbe essere un semplice wrapper stateless attivato via HTTP (es. Azure Function, Azure Container App) attorno all'applicazione Python containerizzata.
+        -   Il flusso Power Automate deve passare il contenuto del file o un link sicuro al servizio di backend.
+        -   L'identificazione dell'utente per le notifiche Teams deve essere gestita da Power Automate, che cattura la proprietà "File Creato Da".
+        -   Questa attività **non** implica la modifica della logica di generazione Excel esistente.
+
+- [ ] **[MVP-02] Implementazione Esportazione Excel Compatibile con CPM**
+    * **User Story:**
+        > Come Specialista Preventivi, dopo aver revisionato il report analitico, voglio un secondo file Excel formattato specificamente per Teamsystem CPM, così da poter fare copia-incolla dei dati direttamente in CPM per accelerare la creazione del preventivo ufficiale.
+    * **Criteri di Accettazione:**
+        1.  Un nuovo modulo writer Excel viene creato (es. `src/infrastructure/cpm_excel_writer.py`).
+        2.  Il nuovo writer prende un oggetto `QuoteResult` e genera un file Excel con una struttura compatibile con l'importazione copia-incolla di CPM.
+        3.  Il file di output deve usare una struttura gerarchica rappresentata da una colonna "Livello" (es. `1` per le voci padre, `2` per i componenti figli).
+        4.  Le intestazioni di colonna nel file generato devono **corrispondere esattamente** ai nomi richiesti da CPM.
+        5.  Per le voci `NO MATCH`, la riga di output deve contenere i dati originali, con le colonne relative ai costi lasciate vuote.
+        6.  Il flusso principale dell'applicazione viene aggiornato per generare **due file** al termine: il report analitico e il nuovo file di importazione per CPM.
+    * **Note di Implementazione:**
+        -   **Prerequisito:** I nomi esatti delle colonne e il loro ordine per l'importazione in CPM devono essere ottenuti dagli stakeholder e definiti come costanti.
+        -   Il nuovo writer dovrà iterare su `QuoteResult.items` per scrivere le righe di "Livello 1" e le righe di "Livello 2" per ogni figlio.
+        -   Il file prodotto sarà posizionato nella cartella `_2_OUTPUT` insieme al report analitico, con un nome distinto (es. `[NomeOriginale]_PER_CPM.xlsx`).
 
 ---
 

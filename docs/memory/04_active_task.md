@@ -1,2 +1,3 @@
 - [x] Generazione iniziale della documentazione tramite reverse engineering della codebase.
-- [ ] Definizione del flusso di avvio del preventivatore da utente.
+- [x] Definizione del flusso di avvio del preventivatore da utente.
+- [ ] **[ATTIVO]** Implementare la pipeline MVP con report analitico (`[MVP-01]` da `BACKLOG.md`).

@@ -9,7 +9,17 @@ Il sistema, denominato "Preventivatore AI", ha lo scopo di automatizzare la crea
 2.  **Digitalizzare Documenti:** Estrarre dati strutturati da documenti non strutturati come PDF o immagini, trasformandoli in un formato JSON intermedio, pronto per essere preventivato.
 3.  **Generare Preventivi:** A partire dai dati estratti, generare un file Excel finale che rappresenta il preventivo, applicando logiche di costing complesse basate sul catalogo e sulle distinte base (Bill of Materials).
 
-## Flussi Principali
+## Flusso Utente MVP (SharePoint)
+
+Il flusso utente definito per il Minimum Viable Product (MVP) astrae la complessità della CLI tramite un'interazione basata su cartelle condivise (approccio "Magic Folder"):
+1.  **Input:** L'utente deposita un file (es. Computo Metrico in Excel) in una cartella SharePoint dedicata, denominata `_1_INPUT`.
+2.  **Automazione:** Un flusso Power Automate rileva il nuovo file e avvia il processo di elaborazione sul backend (eseguendo i comandi `digitize` e `quote`).
+3.  **Output:** Al termine del processo, il sistema genera due file Excel distinti in una cartella di output `_2_OUTPUT`:
+    -   Un **Report Analitico**, che mostra in dettaglio i risultati del matching e le decisioni prese dall'AI.
+    -   Un **File di Import per CPM**, formattato con la struttura e le colonne esatte per l'importazione via copia-incolla in Teamsystem CPM.
+4.  **Notifica:** L'utente che ha caricato il file riceve una notifica su Microsoft Teams con un link diretto ai file di output.
+
+## Flussi Principali (CLI)
 
 Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (CLI) definita in `src/interfaces/cli.py`.
 
@@ -52,8 +62,9 @@ Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (C
     -   **Fallback su Errore AI:** In caso di errore del servizio AI, il sistema accetta il candidato migliore con un `WARNING` se la similarità è alta, altrimenti lo scarta.
     -   **Esplosione Distinta Base:** Per gli articoli "assieme", il servizio recupera ed elenca tutti i sotto-componenti (figli) nel preventivo.
 -   **Formato di Output (Excel):**
-    -   Il file Excel generato contiene due fogli: `Preventivo` e `Metriche`.
-    -   Nel foglio `Preventivo`, la gerarchia è rappresentata da una colonna `"TIPO"` che distingue le righe `"PADRE"` (voci principali) dalle righe `"FIGLIO"` (componenti della distinta base).
+    -   Il sistema genera due file Excel distinti: un **Report Analitico** e un **File di Import per CPM**.
+    -   **Report Analitico:** Contiene due fogli, `Preventivo` e `Metriche`. Nel foglio `Preventivo`, la gerarchia è rappresentata da una colonna `"TIPO"` (`"PADRE"`/`"FIGLIO"`). Questo file è pensato per la revisione umana.
+    -   **File di Import per CPM:** Un file a singolo foglio con una struttura gerarchica basata su una colonna "Livello" (`1` per padre, `2` per figlio) e con intestazioni di colonna che corrispondono esattamente a quelle richieste da Teamsystem CPM per l'importazione.
 
 ### 4. Utility
 -   **`init-db`**: Inizializza lo schema del database da zero, creando tutte le tabelle.
