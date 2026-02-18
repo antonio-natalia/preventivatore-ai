@@ -40,7 +40,7 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
         5.  Entrypoint: Non definire un CMD fisso (sarà sovrascritto dal Job), ma assicurarsi che `src/interfaces/cli.py` sia eseguibile.
         6.  User: Eseguire come utente non-root (security best practice).
 
-- [ ] **[OPS-02] Cloud-Native Logging (JSON)**
+- [x] **[OPS-02] Cloud-Native Logging (JSON)**
     * **Obiettivo:** Rendere i log leggibili da Azure Log Analytics quando in produzione.
     * **Specifiche:**
         1.  Modificare `src/interfaces/cli.py` o creare `src/infrastructure/logger.py`.
@@ -51,7 +51,7 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
 
 ### 2. Infrastructure as Code (Azure Setup)
 
-- [ ] **[INFRA-01] Setup Script (Azure CLI)**
+- [x] **[INFRA-01] Setup Script (Azure CLI)**
     * **Obiettivo:** Script Bash/PowerShell per creare l'intera infrastruttura con un comando.
     * **Specifiche:**
         1.  Creare Resource Group: `rg-preventivatore-prod`.
@@ -60,7 +60,7 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
         4.  Creare Container Apps Environment: `cae-preventivatore` (profilo 'Consumption').
         5.  **Output:** Lo script deve stampare le credenziali ACR e la Connection String dello Storage (da passare al cliente per il setup iniziale).
 
-- [ ] **[INFRA-02] Container App Job Definition**
+- [x] **[INFRA-02] Container App Job Definition**
     * **Obiettivo:** Definire il template YAML per il Job di Azure Container Apps.
     * **Specifiche:**
         1.  Nome: `job-preventivatore`.
@@ -90,22 +90,25 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
 
 ## 🚧 In Corso (WIP)
 
-- [ ] **[TEST-01] Integration Testing:** Creazione suite di test su DB in-memory per validare scenari di duplicazione righe e calcolo prezzi.
-- [ ] **[DATA-01] Gestione "Prezzi a Corpo":** Identificazione e gestione articoli con prezzo forfettario (es. Quadri Elettrici) tramite flag `is_variable_price` o `warning` nel preventivo.
-
 ---
 
 ## 📅 Pianificato (To Do)
-
-### Product KPIs
 - [ ] **[KPI-02] Qualità del Prezzo (Accuracy Analysis):**
     * **Obiettivo:** Misurare quanto il preventivo AI si discosta da quello finale corretto dall'uomo.
     * **Specifiche:** Script offline che prende due Excel (AI Output vs Human Final), calcola il delta sui totali e sulle singole righe, e genera un report di accuratezza (%).
 
-### AI Intelligence (Priorità Alta)
-- [ ] **[NEW] AI Agent "Spaccato Tecnico":** Agente multimodale per leggere schemi unifilari (PDF) allegati alle RDO e generare BOM dinamiche per le voci a corpo (Strategia per i quadri elettrici).
-- [ ] **[BK-02] Progressive Enrichment (Semantic Memory):** Apprendimento automatico sinonimi (Merge) per migliorare i vettori nel tempo.
+## Backlog
+### Product KPIs
 
-### Business Features (Priorità Media)
+
+### Testing
+- [ ] **[TEST-01] Integration Testing:** Creazione suite di test su DB in-memory per validare scenari di duplicazione righe e calcolo prezzi.
+
+### AI Intelligence
+- [ ] **[NEW] AI Agent "Feedback Loop":** Implementazione feedback loop per autoapprendimento di errori o preferenze dell'utente nella redazione dei preventivi.
+- [ ] **[NEW] AI Agent "Spaccato Tecnico":** Agente multimodale per leggere schemi unifilari (PDF) allegati alle RDO e generare BOM dinamiche per le voci a corpo (Strategia per i quadri elettrici).
+- [ ] **[DATA-01] Gestione "Prezzi a Corpo":** Identificazione e gestione articoli con prezzo forfettario (es. Quadri Elettrici) tramite flag `is_variable_price` o `warning` nel preventivo.
+
+### Business Features
+- [ ] **[BK-02] Progressive Enrichment (Semantic Memory):** Apprendimento automatico sinonimi (Merge) per migliorare i vettori nel tempo.
 - [ ] **[BK-03] Families & Variants (CPQ):** Gestione avanzata varianti (es. Serie Civile: Vimar vs Bticino) come filtro nel preventivo.
-- [ ] **[BK-04] Confidence Score Visualization:** Esporre nel file Excel di output una barra o colore (Verde/Giallo/Rosso) che indichi la sicurezza del matching AI.
