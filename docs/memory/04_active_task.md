@@ -1,1 +1,2 @@
-Generazione iniziale della documentazione completata tramite reverse engineering della codebase.
+- [x] Generazione iniziale della documentazione tramite reverse engineering della codebase.
+- [ ] Definizione del flusso di avvio del preventivatore da utente.
