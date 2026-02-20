@@ -9,15 +9,88 @@ Il sistema, denominato "Preventivatore AI", ha lo scopo di automatizzare la crea
 2.  **Digitalizzare Documenti:** Estrarre dati strutturati da documenti non strutturati come PDF o immagini, trasformandoli in un formato JSON intermedio, pronto per essere preventivato.
 3.  **Generare Preventivi:** A partire dai dati estratti, generare un file Excel finale che rappresenta il preventivo, applicando logiche di costing complesse basate sul catalogo e sulle distinte base (Bill of Materials).
 
-## Flusso Utente MVP (SharePoint)
+## Flusso Utente MVP (SharePoint - Pull Strategy)
 
-Il flusso utente definito per il Minimum Viable Product (MVP) astrae la complessità della CLI tramite un'interazione basata su cartelle condivise (approccio "Magic Folder"):
-1.  **Input:** L'utente deposita un file (es. Computo Metrico in Excel) in una cartella SharePoint dedicata, denominata `_1_INPUT`.
-2.  **Automazione:** Un flusso Power Automate rileva il nuovo file e avvia il processo di elaborazione sul backend (eseguendo i comandi `digitize` e `quote`).
-3.  **Output:** Al termine del processo, il sistema genera due file Excel distinti in una cartella di output `_2_OUTPUT`:
-    -   Un **Report Analitico**, che mostra in dettaglio i risultati del matching e le decisioni prese dall'AI.
-    -   Un **File di Import per CPM**, formattato con la struttura e le colonne esatte per l'importazione via copia-incolla in Teamsystem CPM.
-4.  **Notifica:** L'utente che ha caricato il file riceve una notifica su Microsoft Teams con un link diretto ai file di output.
+Il flusso utente definito per il Minimum Viable Product (MVP) implementa un approccio "Magic Folder" basato su SharePoint, utilizzando una strategia di **Pull** per superare i limiti di licenza dei connettori Power Automate.
+
+1.  **Input:** L'utente deposita un file (es. Computo Metrico in Excel) in una cartella SharePoint dedicata (es. `_1_INPUT`) all'interno della libreria documenti del sito di preventivazione.
+2.  **Trigger (Power Automate):**
+    -   Un flusso "When a file is created (properties only)" rileva il nuovo file.
+    -   Il flusso invia una richiesta HTTP POST autenticata al Container App Job su Azure.
+    -   **Payload:** La richiesta include il **percorso completo** (`file_path`) del file appena creato e il nome del file.
+3.  **Esecuzione (Container App - Pull):**
+    -   Il Job si avvia ed esegue il comando `process-sharepoint-file`.
+    -   **Autenticazione:** Il servizio si autentica a Microsoft Graph API utilizzando un **Service Principal** (App-Only Auth) configurato in Azure AD, con permessi `Sites.ReadWrite.All`.
+    -   **Download:** Il servizio scarica il file dal percorso specificato in una cartella temporanea locale al container.
+    -   **Elaborazione:** Vengono eseguiti i servizi di `Digitization` e `Quote` sul file locale.
+    -   **Upload:** Il report Excel finale viene caricato su SharePoint. Il percorso di destinazione viene derivato dinamicamente sostituendo `INPUT` con `OUTPUT` nel percorso originale.
+4.  **Output:** Il sistema genera il file Excel nella cartella `_2_OUTPUT`.
+5.  **Notifica:**
+    -   Se il job termina con successo, l'utente riceve una notifica su Microsoft Teams con il link al file.
+    -   Se il job fallisce, l'utente riceve una notifica di errore con i dettagli.
+
+## Manuale di Configurazione Power Automate
+
+Di seguito sono riportate le istruzioni passo-passo per configurare il flusso Power Automate necessario per orchestrare la pipeline.
+
+### Prerequisiti
+-   Accesso a Power Automate.
+-   Connettore HTTP (Premium) disponibile.
+-   Credenziali (Client ID e Secret) per autenticare la chiamata HTTP verso Azure (Gestione API o autenticazione diretta su endpoint Container App).
+
+### Step 1: Trigger SharePoint
+-   **Connettore:** SharePoint
+-   **Azione:** *When a file is created (properties only)*
+-   **Configurazione:**
+    -   **Site Address:** Selezionare il sito `LTE DIREZIONE - LTE Preventivazione`.
+    -   **Library Name:** Selezionare `Documenti`.
+    -   **Folder:** Selezionare la cartella `_1_INPUT` (navigando il percorso `LTE Preventivazione/Test Preventivatore/INPUT`).
+
+### Step 2: Trigger Azure Job (HTTP)
+-   **Connettore:** HTTP
+-   **Azione:** *HTTP*
+-   **Configurazione:**
+    -   **Method:** `POST`
+    -   **URI:** Inserire l'endpoint di gestione Azure per avviare il job.
+        -   Formato: `https://management.azure.com/subscriptions/{SUB_ID}/resourceGroups/{RG_NAME}/providers/Microsoft.App/jobs/{JOB_NAME}/start?api-version=2024-03-01`
+    -   **Authentication:** Selezionare *Active Directory OAuth*.
+        -   *Tenant:* Il tuo Tenant ID.
+        -   *Audience:* `https://management.azure.com/`
+        -   *Client ID / Secret:* Le credenziali di un Service Principal che ha il ruolo "Contributor" (o "Container Apps Job Operator") sul Resource Group.
+    -   **Body (JSON):**
+        ```json
+        {
+          "template": {
+            "containers": [
+              {
+                "name": "job-preventivatore",
+                "command": [
+                  "python",
+                  "-m",
+                  "src.interfaces.cli",
+                  "process-sharepoint-file",
+                  "--file-path",
+                  "@{triggerBody()?['{Path}']}" 
+                ]
+              }
+            ]
+          }
+        }
+        ```
+        *Nota:* `@{triggerBody()?['{Path}']}` è il contenuto dinamico "Full Path" (Percorso completo) fornito dal trigger SharePoint.
+
+### Step 3: Loop di Monitoraggio (Opzionale ma Raccomandato)
+Poiché l'azione HTTP avvia il job in modo asincrono (Fire & Forget), per inviare la notifica di completamento è necessario interrogare lo stato.
+-   **Azione:** *Do until*
+    -   Loop fino a che lo stato dell'esecuzione del job è `Succeeded` o `Failed`.
+    -   All'interno del loop: `Delay` (30 secondi) -> `HTTP GET` (Status dell'esecuzione).
+
+### Step 4: Notifica Teams
+-   **Connettore:** Microsoft Teams
+-   **Azione:** *Post message in a chat or channel*
+-   **Configurazione:**
+    -   **Recipient:** `@{triggerBody()?['Editor']?['Email']}` (L'email dell'utente che ha caricato il file).
+    -   **Message:** "Il tuo preventivo per il file `@{triggerBody()?['{Name}']}` è pronto. Trovi il report nella cartella OUTPUT."
 
 ## Flussi Principali (CLI)
 
@@ -66,7 +139,18 @@ Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (C
     -   **Report Analitico:** Contiene due fogli, `Preventivo` e `Metriche`. Nel foglio `Preventivo`, la gerarchia è rappresentata da una colonna `"TIPO"` (`"PADRE"`/`"FIGLIO"`). Questo file è pensato per la revisione umana.
     -   **File di Import per CPM:** Un file a singolo foglio con una struttura gerarchica basata su una colonna "Livello" (`1` per padre, `2` per figlio) e con intestazioni di colonna che corrispondono esattamente a quelle richieste da Teamsystem CPM per l'importazione.
 
-### 4. Utility
+### 4. Integrazione SharePoint (`process-sharepoint-file`)
+-   **Comando:** `python -m src.interfaces.cli process-sharepoint-file --file-path <path_to_file>`
+-   **Scopo:** Entry point per l'automazione cloud. Gestisce il ciclo di vita completo di un file attivato da remoto.
+-   **Flusso:**
+    1.  Riceve il percorso relativo del file su SharePoint (es. `/Shared Documents/Project/INPUT/file.xlsx`).
+    2.  Crea un ambiente temporaneo isolato (temp directory).
+    3.  Scarica il file tramite Microsoft Graph API.
+    4.  Esegue in sequenza `digitize` e `quote`.
+    5.  Calcola il percorso di output sostituendo "INPUT" con "OUTPUT" nel percorso originale.
+    6.  Carica il report finale su SharePoint.
+
+### 5. Utility
 -   **`init-db`**: Inizializza lo schema del database da zero, creando tutte le tabelle.
 -   **`sonar`**: Avvia un'interfaccia testuale (TUI) per l'esplorazione interattiva dei dati nel catalogo.
 -   **`check`**: Esegue una diagnostica del sistema.
