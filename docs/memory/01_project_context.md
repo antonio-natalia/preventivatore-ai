@@ -29,6 +29,45 @@ Il flusso utente definito per il Minimum Viable Product (MVP) implementa un appr
     -   Se il job termina con successo, l'utente riceve una notifica su Microsoft Teams con il link al file.
     -   Se il job fallisce, l'utente riceve una notifica di errore con i dettagli.
 
+## Configurazione Service Principal per SharePoint
+
+L'applicazione necessita di un Service Principal (App Registration) in Azure Active Directory per autenticarsi a Microsoft Graph API e accedere ai file su SharePoint in modo non interattivo. Di seguito i passaggi per la configurazione.
+
+### 1. Creazione della Registrazione App
+1.  **Accesso al Portale Azure:** Accedere a `portal.azure.com`.
+2.  **Azure Active Directory:** Navigare in "Azure Active Directory".
+3.  **Registrazione App:**
+    *   Andare su "App registrations" -> "New registration".
+    *   **Name:** `PreventivatoreAI-SharePoint-Service` (o un nome descrittivo).
+    *   **Supported account types:** Lasciare "Accounts in this organizational directory only".
+    *   **Redirect URI:** Può essere lasciato vuoto.
+    *   Cliccare su "Register".
+
+### 2. Recupero Credenziali
+Una volta creata l'app, dalla sua pagina di overview, copiare i seguenti valori. Saranno le variabili d'ambiente necessarie per l'applicazione Python:
+-   `Application (client) ID` -> `SHAREPOINT_CLIENT_ID`
+-   `Directory (tenant) ID` -> `SHAREPOINT_TENANT_ID`
+
+### 3. Creazione del Client Secret
+1.  Nel menu a sinistra dell'app, navigare in "Certificates & secrets".
+2.  Cliccare su "New client secret".
+3.  Aggiungere una descrizione (es. `sharepoint_app_secret`) e scegliere una scadenza.
+4.  **IMPORTANTE:** Copiare immediatamente il valore del segreto (colonna "Value"). Non sarà più visibile in seguito. Questo valore è il `SHAREPOINT_CLIENT_SECRET`.
+
+### 4. Assegnazione Permessi API
+1.  Nel menu a sinistra, navigare in "API permissions".
+2.  Cliccare su "Add a permission" e selezionare "Microsoft Graph".
+3.  Selezionare **"Application permissions"** (non "Delegated").
+4.  Nella barra di ricerca, digitare `Sites` e, dall'elenco, selezionare `Sites.ReadWrite.All`.
+5.  Cliccare su "Add permissions".
+
+### 5. Concessione del Consenso Amministrativo (Admin Consent)
+I permessi di tipo "Application" richiedono il consenso di un amministratore del tenant per essere attivati.
+1.  Nella stessa pagina "API permissions", cliccare sul pulsante **"Grant admin consent for [Nome del Tuo Tenant]"**.
+2.  Verificare che la colonna "Status" per il permesso `Sites.ReadWrite.All` mostri un'icona verde con la dicitura "Granted for...".
+
+A questo punto, le tre credenziali (`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`) sono pronte per essere inserite nel file `.env` dell'applicazione o nei segreti dell'ambiente di produzione (es. Azure Container Apps).
+
 ## Manuale di Configurazione Power Automate
 
 Di seguito sono riportate le istruzioni passo-passo per configurare il flusso Power Automate necessario per orchestrare la pipeline.
