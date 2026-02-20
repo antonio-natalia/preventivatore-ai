@@ -10,10 +10,9 @@ from src.core.normalizers.v3_semantic import SemanticNormalizerV3
 
 class DigitizationService:
     def __init__(self):
-        # Setup cartelle lavoro
-        self.work_dir = os.path.join(settings.PROJECT_ROOT, "richieste_ordine")
-        if not os.path.exists(self.work_dir):
-            os.makedirs(self.work_dir)
+        # Il costruttore ora è vuoto o può contenere inizializzazioni
+        # che non dipendono dal file system.
+        pass
 
     def _ensure_xlsx_format(self, input_file: str) -> str:
         """
@@ -39,35 +38,37 @@ class DigitizationService:
             print(f"⚠️ Errore conversione: {e}. Uso originale.")
             return input_file
 
-    def process_document(self, input_file: str, deep_scan: bool = False, sample_rows: int = 0):
+    def process_document(self, input_file_path: str, output_json_path: str, deep_scan: bool = False, sample_rows: int = 0):
         """
         Orchestra il flusso: Input -> (Digitizer Infra) -> Normalizer Core -> JSON
         """
-        if not os.path.exists(input_file):
-            print(f"❌ File non trovato: {input_file}")
-            return
+        if not os.path.exists(input_file_path):
+            print(f"❌ File non trovato: {input_file_path}")
+            return None # Restituiamo None per indicare fallimento
 
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        ext = os.path.splitext(input_file)[1].lower()
-        target_xlsx = input_file
+        ext = os.path.splitext(input_file_path)[1].lower()
+        target_xlsx = input_file_path
 
         # --- FASE 1: DIGITIZER (Se PDF/IMG) ---
-        # Chiama la funzione infrastrutturale definita nell'altro file
+        # Se l'input è un PDF/immagine, dobbiamo creare un Excel temporaneo.
+        # Lo creiamo nella stessa directory del file JSON di output.
         if ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff']:
-            temp_raw_excel = os.path.join(self.work_dir, "raw_input.xlsx")
+            output_dir = os.path.dirname(output_json_path)
+            temp_raw_excel = os.path.join(output_dir, "raw_vision_output.xlsx")
             
-            success = run_digitizer_task(input_file, temp_raw_excel)
+            success = run_digitizer_task(input_file_path, temp_raw_excel)
             
             if not success:
                 print("❌ Fase Digitizer fallita. Interruzione.")
-                return
+                return None
             target_xlsx = temp_raw_excel
             
         elif ext in ['.csv', '.xls']:
-            target_xlsx = self._ensure_xlsx_format(input_file)
+            target_xlsx = self._ensure_xlsx_format(input_file_path)
 
         # --- FASE 2: NORMALIZZAZIONE ---
-        final_json_output = os.path.join(self.work_dir, f"{base_name}_clean.json")
+        # Il percorso del file JSON di output è ora passato come argomento.
+        final_json_output = output_json_path
         
         try:
             scan_mode = "deep_scan" if deep_scan else "fast_peek"
@@ -83,7 +84,7 @@ class DigitizationService:
             print(f"❌ Errore durante la normalizzazione: {e}")
             import traceback
             traceback.print_exc()
-            return
+            return None
 
         # --- FASE 3: PERSISTENZA ---
         if results and len(results) > 0:
@@ -100,5 +101,7 @@ class DigitizationService:
                 json.dump(output_data, f, indent=4, ensure_ascii=False)
             
             print(f"✅ File JSON pronto: {final_json_output}")
+            return final_json_output # Restituisci il percorso del file generato
         else:
             print("⚠️ Nessun dato estratto.")
+            return None # Restituisci None se non ci sono dati
