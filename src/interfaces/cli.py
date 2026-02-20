@@ -49,8 +49,7 @@ def main():
 
     # --- COMMAND: PROCESS SHAREPOINT FILE (for Power Automate) ---
     process_sp_parser = subparsers.add_parser("process-sharepoint-file", help="Processes a file from SharePoint (triggered by Power Automate)")
-    process_sp_parser.add_argument("--file-id", required=True, help="SharePoint file unique ID")
-    process_sp_parser.add_argument("--file-name", required=True, help="SharePoint file name")
+    process_sp_parser.add_argument("--file-path", required=True, help="Path to the file in SharePoint (e.g., /Shared Documents/Folder/file.xlsx)")
 
     # --- COMMANDS: UTILS ---
     subparsers.add_parser("sonar", help="Interfaccia TUI esplorativa")
@@ -123,12 +122,65 @@ def main():
             run_diagnostics()
 
         elif args.command == "process-sharepoint-file":
-            logger.info(f"Received SharePoint trigger for file: {args.file_name} (ID: {args.file_id})")
-            # In the next steps, we will implement the logic here:
-            # 1. Download file from SharePoint using file_id.
-            # 2. Run digitize and quote services on the local file.
-            # 3. Upload the resulting report back to SharePoint.
-            logger.info("Placeholder for SharePoint processing logic. Arguments received successfully.")
+            import tempfile
+            import json
+            from src.infrastructure.sharepoint_client import SharePointClient
+
+            logger.info(f"Received SharePoint trigger for file path: {args.file_path}")
+
+            sp_client = SharePointClient()
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # --- 1. DOWNLOAD ---
+                file_name = os.path.basename(args.file_path)
+                local_input_path = os.path.join(temp_dir, file_name)
+
+                logger.info(f"Downloading file to temporary path: {local_input_path}")
+                sp_client.download_file_by_path(args.file_path, local_input_path)
+
+                # --- 2. PROCESS (Digitize & Quote) ---
+                base_name, _ = os.path.splitext(file_name)
+                local_json_path = os.path.join(temp_dir, f"{base_name}.json")
+                output_excel_filename = f"{base_name}_Report_Analitico.xlsx"
+                local_output_excel_path = os.path.join(temp_dir, output_excel_filename)
+
+                # Digitize
+                logger.info("Starting digitization...")
+                digitizer = DigitizationService()
+                digitized_path = digitizer.process_document(local_input_path, local_json_path)
+                if not digitized_path:
+                    raise Exception("Digitization failed, no JSON file was produced.")
+
+                # Quote
+                logger.info("Starting quoting...")
+                from src.infrastructure.repositories import CatalogRepository
+                conn = get_db_connection()
+                repo = CatalogRepository(conn)
+                quote_service = QuoteService(repo)
+
+                with open(digitized_path, 'r', encoding='utf-8') as f:
+                    raw_data = json.load(f)
+
+                result_dto = quote_service.generate_quote(raw_data, solo_manodopera=False)
+                write_quote_dto_to_excel(result_dto, local_output_excel_path)
+                conn.close()
+                logger.info(f"Quote generated locally: {local_output_excel_path}")
+
+                # --- 3. UPLOAD ---
+                remote_output_folder_path = os.path.dirname(args.file_path)
+
+                if "_1_INPUT" in remote_output_folder_path:
+                    remote_output_folder_path = remote_output_folder_path.replace("_1_INPUT", "_2_OUTPUT")
+                elif "INPUT" in remote_output_folder_path:
+                    logger.warning("Found generic 'INPUT' folder. Replacing with 'OUTPUT'. Consider using convention '_1_INPUT/_2_OUTPUT'.")
+                    remote_output_folder_path = remote_output_folder_path.replace("INPUT", "OUTPUT", 1)
+                else:
+                    logger.warning("Could not find '_1_INPUT' or 'INPUT' in path. Uploading to same folder as input.")
+
+                logger.info(f"Uploading result '{output_excel_filename}' to SharePoint folder: {remote_output_folder_path}")
+                sp_client.upload_file(local_output_excel_path, remote_output_folder_path, output_excel_filename)
+
+            logger.info("SharePoint file processed and report uploaded successfully.")
 
     except Exception as e:
         logger.critical(f"Unhandled Exception in CLI: {e}", exc_info=True)
