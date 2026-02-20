@@ -47,6 +47,11 @@ def main():
     digi_parser.add_argument("--output", required=True, help="File output (JSON)")
     digi_parser.add_argument("--deep", action="store_true", help="Analisi profonda")
 
+    # --- COMMAND: PROCESS SHAREPOINT FILE (for Power Automate) ---
+    process_sp_parser = subparsers.add_parser("process-sharepoint-file", help="Processes a file from SharePoint (triggered by Power Automate)")
+    process_sp_parser.add_argument("--file-id", required=True, help="SharePoint file unique ID")
+    process_sp_parser.add_argument("--file-name", required=True, help="SharePoint file name")
+
     # --- COMMANDS: UTILS ---
     subparsers.add_parser("sonar", help="Interfaccia TUI esplorativa")
     subparsers.add_parser("init-db", help="Inizializza Database vuoto")
@@ -116,6 +121,14 @@ def main():
         
         elif args.command == "check":
             run_diagnostics()
+
+        elif args.command == "process-sharepoint-file":
+            logger.info(f"Received SharePoint trigger for file: {args.file_name} (ID: {args.file_id})")
+            # In the next steps, we will implement the logic here:
+            # 1. Download file from SharePoint using file_id.
+            # 2. Run digitize and quote services on the local file.
+            # 3. Upload the resulting report back to SharePoint.
+            logger.info("Placeholder for SharePoint processing logic. Arguments received successfully.")
 
     except Exception as e:
         logger.critical(f"Unhandled Exception in CLI: {e}", exc_info=True)
