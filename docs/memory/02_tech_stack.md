@@ -38,6 +38,10 @@ Questo documento descrive i componenti tecnologici, il pattern architetturale e 
     -   `APP_ENV`: Determina il formato dei log. Impostato su `"CLOUD"` abilita il logging JSON strutturato, altrimenti usa un formato testuale.
     -   `DB_FILE`: Percorso completo al file del database SQLite.
     -   `OPENAI_API_KEY`: Chiave API per i servizi OpenAI.
+    -   `SHAREPOINT_TENANT_ID`: ID del tenant Azure AD.
+    -   `SHAREPOINT_CLIENT_ID`: ID dell'App Registration per l'accesso a SharePoint.
+    -   `SHAREPOINT_CLIENT_SECRET`: Segreto dell'App Registration.
+    -   `SHAREPOINT_SITE_NAME`: Nome del sito SharePoint a cui connettersi.
     -   `PYTHONDONTWRITEBYTECODE=1`: Evita la creazione di file `.pyc`.
     -   `PYTHONUNBUFFERED=1`: Forza lo stream di output/error a non avere buffer, essenziale per un logging corretto in ambienti containerizzati.
 -   **Sicurezza:** Il container viene eseguito con un utente non-root (`appuser`).
