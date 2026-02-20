@@ -1,5 +1,6 @@
 import os
 from pydantic_settings import BaseSettings
+from pydantic import SecretStr
 from dotenv import load_dotenv, find_dotenv
 
 # Carica .env se presente
@@ -28,6 +29,12 @@ class Settings(BaseSettings):
 
     # --- API KEYS ---
     OPENAI_API_KEY: str
+
+    # --- SHAREPOINT SETTINGS ---
+    SHAREPOINT_TENANT_ID: str
+    SHAREPOINT_CLIENT_ID: str
+    SHAREPOINT_CLIENT_SECRET: SecretStr
+    SHAREPOINT_SITE_NAME: str # es. "NomeDelSito"
 
     # --- VECTOR SETTINGS ---
     VECTOR_BATCH_SIZE: int = 200
