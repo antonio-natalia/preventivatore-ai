@@ -1,3 +1,4 @@
 - [x] Generazione iniziale della documentazione tramite reverse engineering della codebase.
 - [x] Definizione del flusso di avvio del preventivatore da utente.
-- [ ] **[ATTIVO]** Implementare la pipeline MVP con report analitico (`[MVP-01]` da `BACKLOG.md`).
+- [x] Implementare la pipeline MVP con report analitico (`[MVP-01]` da `BACKLOG.md`).
+- [ ] **[ATTIVO]** Implementare l'esportazione Excel compatibile con CPM (`[MVP-02]` da `BACKLOG.md`).

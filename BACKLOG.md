@@ -72,7 +72,7 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
 
 ### 3. Orchestration and User Workflow (MVP)
 
-- [ ] **[MVP-01] Implementazione Pipeline di Automazione con Report Analitico**
+- [x] **[MVP-01] Implementazione Pipeline di Automazione con Report Analitico**
     * **User Story:**
         > Come Specialista Preventivi, voglio depositare un file di Computo Metrico in una cartella SharePoint e ricevere automaticamente un report analitico dettagliato in una cartella di output, così da poter vedere come l'AI ha processato il documento senza eseguire codice manualmente.
     * **Criteri di Accettazione:**
