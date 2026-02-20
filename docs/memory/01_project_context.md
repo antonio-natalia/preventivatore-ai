@@ -48,6 +48,9 @@ Una volta creata l'app, dalla sua pagina di overview, copiare i seguenti valori.
 -   `Application (client) ID` -> `SHAREPOINT_CLIENT_ID`
 -   `Directory (tenant) ID` -> `SHAREPOINT_TENANT_ID`
 
+In aggiunta, è necessario definire il nome del sito SharePoint target:
+-   **Nome Sito SharePoint** -> `SHAREPOINT_SITE_NAME` (es. `LTE DIREZIONE - LTE Preventivazione`)
+
 ### 3. Creazione del Client Secret
 1.  Nel menu a sinistra dell'app, navigare in "Certificates & secrets".
 2.  Cliccare su "New client secret".
@@ -66,7 +69,7 @@ I permessi di tipo "Application" richiedono il consenso di un amministratore del
 1.  Nella stessa pagina "API permissions", cliccare sul pulsante **"Grant admin consent for [Nome del Tuo Tenant]"**.
 2.  Verificare che la colonna "Status" per il permesso `Sites.ReadWrite.All` mostri un'icona verde con la dicitura "Granted for...".
 
-A questo punto, le tre credenziali (`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`) sono pronte per essere inserite nel file `.env` dell'applicazione o nei segreti dell'ambiente di produzione (es. Azure Container Apps).
+A questo punto, le quattro impostazioni (`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET`, `SHAREPOINT_SITE_NAME`) sono pronte per essere inserite nel file `.env` dell'applicazione o nei segreti dell'ambiente di produzione (es. Azure Container Apps).
 
 ## Manuale di Configurazione Power Automate
 
