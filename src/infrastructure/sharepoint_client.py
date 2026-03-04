@@ -2,6 +2,7 @@ import os
 import httpx
 import msal
 import logging
+import codecs # Importa il modulo codecs
 from src.config import settings
 from src.infrastructure.telemetry import track_phase
 
@@ -23,6 +24,7 @@ class SharePointClient:
         self.site_name = settings.SHAREPOINT_SITE_NAME
         
         self.site_id = None # Cache for site ID
+        self.main_drive_id = None # Cache for the main document library drive ID
         self._token = None  # Cache for access token
 
         # MSAL Application
@@ -31,6 +33,9 @@ class SharePointClient:
             authority=f"https://login.microsoftonline.com/{self.tenant_id}",
             client_credential=self.client_secret,
         )
+        # Pre-resolve site ID and main drive ID during initialization
+        self._get_site_id() # Assicurati che il site_id sia risolto e memorizzato nella cache
+        self._get_drive_id("Documenti") # Risolvi e memorizza nella cache l'ID del drive principale per la libreria predefinita
 
     def _get_access_token(self) -> str:
         """Ottiene un token di accesso valido per MS Graph."""
@@ -81,6 +86,29 @@ class SharePointClient:
             logger.info(f"Site ID risolto: {self.site_id}")
             return self.site_id
 
+    def _get_drive_id(self, drive_name: str) -> str:
+        """Risolve il nome del drive (libreria documenti) nel suo ID univoco per il sito corrente."""
+        if self.main_drive_id:
+            return self.main_drive_id
+
+        site_id = self._get_site_id() # Assicurati che il site_id sia risolto
+        logger.info(f"Risoluzione Drive ID per '{drive_name}' sul sito '{site_id}'...")
+
+        drives_url = f"{self.GRAPH_API_BASE_URL}/sites/{site_id}/drives"
+
+        with httpx.Client() as client:
+            resp = client.get(drives_url, headers=self._get_headers())
+            resp.raise_for_status()
+            data = resp.json()
+
+            for drive in data.get("value", []):
+                if drive.get("name") == drive_name:
+                    self.main_drive_id = drive["id"]
+                    logger.info(f"Drive ID risolto per '{drive_name}': {self.main_drive_id}")
+                    return self.main_drive_id
+            
+            raise Exception(f"Drive (document library) '{drive_name}' not found for site '{self.site_name}'.")
+
     @track_phase(phase_name="sharepoint_download")
     def download_file_by_path(self, sharepoint_path: str, local_dest_path: str):
         """
@@ -90,32 +118,55 @@ class SharePointClient:
                                 o percorso relativo alla root del drive.
         :param local_dest_path: Dove salvare il file localmente.
         """
-        site_id = self._get_site_id()
+        # Il site_id e il drive_id principale ("Documenti condivisi") vengono pre-risolti nel costruttore.
+        drive_id = self.main_drive_id
+        if not drive_id:
+            raise Exception("Main SharePoint drive ID not resolved. Ensure SharePointClient is initialized correctly.")
+
+        # Pulizia path: La `sharepoint_path` dal trigger Power Automate è una URL server-relative completa,
+        # es. "/sites/NOME_SITO/Documenti condivisi/Cartella/File.xlsx".
+        # L'API Graph `drives/{drive-id}/root:/{path}:/content` si aspetta un path relativo alla root della libreria documenti.
         
-        # Logica per gestire il path. Graph API accetta percorsi relativi al drive di default o percorsi assoluti.
-        # Se il path inizia con /sites/..., proviamo a estrarre la parte relativa.
-        # Approccio più sicuro: Usare l'endpoint getByPath sul drive di default (Documenti)
+        # Elenco dei nomi comuni per le librerie documenti di default
+        # Si attende che la `sharepoint_path` possa iniziare direttamente con il nome della libreria,
+        # senza una barra iniziale, o con una barra.
+        doc_library_markers = ["Documenti condivisi/", "Shared Documents/"]
         
-        # Pulizia path: Rimuovi prefisso sito se presente, o gestisci come path relativo alla library "Documenti"
-        # Esempio Path Input: "/Shared Documents/LTE Preventivazione/..."
-        # Endpoint: /sites/{site-id}/drive/root:/{path-relative-to-root}:/content
-        
-        # Rimuoviamo "/Shared Documents/" o simile se presente all'inizio per ottenere il path relativo alla root del drive
-        # Nota: Questo è un punto fragile. Assumiamo che i file siano nella Document Library di default ("Documents").
-        
+        # Inizializza il percorso pulito con il path originale
         clean_path = sharepoint_path
-        if sharepoint_path.startswith("/Shared Documents/"):
-             clean_path = sharepoint_path.replace("/Shared Documents/", "", 1)
+        
+        # Rimuove una eventuale barra iniziale dal percorso per uniformare la ricerca dei marcatori
+        if clean_path.startswith('/'):
+            clean_path = clean_path[1:]
+
+        # Cerca e rimuovi il prefisso della libreria documenti nel percorso
+        for marker in doc_library_markers:
+            if clean_path.startswith(marker):
+                # Rimuovi il marker dall'inizio del path
+                clean_path = clean_path[len(marker):]
+                break # Esci una volta che il marker è stato trovato e rimosso
+        else:
+            # Se nessun marker conosciuto è stato trovato, registra un avviso.
+            # Il path potrebbe essere già nella forma corretta o usare un nome libreria non standard.
+            logger.warning(f"Nessun nome di libreria documenti di default riconosciuto nel path: '{clean_path}'. Il path verrà usato 'così com'è'.")
+            
         
         # Codifica URL del path
+        # Decodifica le sequenze di escape Unicode letterali (es. "\u2013" diventa "–")
+        # Questo è necessario perché l'argomento "--file-path" sembra passare la stringa con escape letterali.
+        try:
+            clean_path = codecs.decode(clean_path, 'unicode_escape')
+        except UnicodeDecodeError as e:
+            logger.warning(f"Errore durante la decodifica unicode_escape del path '{clean_path}': {e}. Il path verrà usato così com'è.")
+
         from urllib.parse import quote
         encoded_path = quote(clean_path)
         
         # Costruzione URL Download
-        # Sintassi: GET /sites/{site-id}/drive/root:/{path}:/content
-        download_url = f"{self.GRAPH_API_BASE_URL}/sites/{site_id}/drive/root:/{encoded_path}:/content"
+        # Sintassi: GET /drives/{drive-id}/root:/{path}:/content
+        download_url = f"{self.GRAPH_API_BASE_URL}/drives/{drive_id}/root:/{encoded_path}:/content"
         
-        logger.info(f"Scaricando da: {clean_path} ...")
+        logger.info(f"Scaricando da: {clean_path} (Drive ID: {drive_id}) ...")
         
         with httpx.Client(follow_redirects=True) as client:
             with client.stream("GET", download_url, headers=self._get_headers()) as resp:
@@ -138,24 +189,43 @@ class SharePointClient:
         :param remote_folder_path: Cartella di destinazione su SharePoint (es. "/LTE Preventivazione/OUTPUT").
         :param remote_file_name: Nome del file da salvare su SharePoint.
         """
-        site_id = self._get_site_id()
+        # Il drive_id principale ("Documenti condivisi") viene pre-risolto nel costruttore.
+        drive_id = self.main_drive_id
+        if not drive_id:
+            raise Exception("Main SharePoint drive ID not resolved. Ensure SharePointClient is initialized correctly.")
         
-        # Pulizia path remoto (simile al download)
         clean_folder_path = remote_folder_path
-        if remote_folder_path.startswith("/Shared Documents/"):
-             clean_folder_path = remote_folder_path.replace("/Shared Documents/", "", 1)
         
-        # Assicuriamoci che non inizi con /
+        # Rimuoviamo il prefisso della libreria documenti se presente, come per il download.
+        doc_library_markers = ["Documenti condivisi/", "Shared Documents/"]
+        
+        # Rimuove una eventuale barra iniziale dal percorso per uniformare la ricerca dei marcatori
+        if clean_folder_path.startswith('/'):
+            clean_folder_path = clean_folder_path[1:]
+
+        for marker in doc_library_markers:
+            if clean_folder_path.startswith(marker):
+                clean_folder_path = clean_folder_path[len(marker):]
+                break
+        
+        # Assicuriamoci che non inizi con / dopo la pulizia del marker
         if clean_folder_path.startswith("/"):
             clean_folder_path = clean_folder_path[1:]
 
+        # Combina e decodifica le sequenze di escape Unicode letterali per il path completo
+        full_remote_path = f"{clean_folder_path}/{remote_file_name}"
+        try:
+            full_remote_path = codecs.decode(full_remote_path, 'unicode_escape')
+        except UnicodeDecodeError as e:
+            logger.warning(f"Errore durante la decodifica unicode_escape del path di upload '{full_remote_path}': {e}. Il path verrà usato così com'è.")
+
         from urllib.parse import quote
-        encoded_path = quote(f"{clean_folder_path}/{remote_file_name}")
+        encoded_path = quote(full_remote_path)
         
-        # Endpoint: PUT /sites/{site-id}/drive/root:/{parent-path}/{filename}:/content
-        upload_url = f"{self.GRAPH_API_BASE_URL}/sites/{site_id}/drive/root:/{encoded_path}:/content"
+        # Endpoint: PUT /drives/{drive-id}/root:/{parent-path}/{filename}:/content
+        upload_url = f"{self.GRAPH_API_BASE_URL}/drives/{drive_id}/root:/{encoded_path}:/content"
         
-        logger.info(f"Caricamento in corso su: {clean_folder_path}/{remote_file_name} ...")
+        logger.info(f"Caricamento in corso su: {clean_folder_path}/{remote_file_name} (Drive ID: {drive_id}) ...")
         
         with open(local_file_path, "rb") as f:
             file_content = f.read()

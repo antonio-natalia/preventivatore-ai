@@ -89,6 +89,13 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
         -   L'identificazione dell'utente per le notifiche Teams deve essere gestita da Power Automate, che cattura la proprietà "File Creato Da".
         -   Questa attività **non** implica la modifica della logica di generazione Excel esistente.
 
+---
+
+## 🚧 In Corso (WIP)
+
+---
+
+## 📅 Pianificato (To Do)
 - [ ] **[MVP-02] Implementazione Esportazione Excel Compatibile con CPM**
     * **User Story:**
         > Come Specialista Preventivi, dopo aver revisionato il report analitico, voglio un secondo file Excel formattato specificamente per Teamsystem CPM, così da poter fare copia-incolla dei dati direttamente in CPM per accelerare la creazione del preventivo ufficiale.
@@ -104,13 +111,6 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
         -   Il nuovo writer dovrà iterare su `QuoteResult.items` per scrivere le righe di "Livello 1" e le righe di "Livello 2" per ogni figlio.
         -   Il file prodotto sarà posizionato nella cartella `_2_OUTPUT` insieme al report analitico, con un nome distinto (es. `[NomeOriginale]_PER_CPM.xlsx`).
 
----
-
-## 🚧 In Corso (WIP)
-
----
-
-## 📅 Pianificato (To Do)
 - [ ] **[KPI-02] Qualità del Prezzo (Accuracy Analysis):**
     * **Obiettivo:** Misurare quanto il preventivo AI si discosta da quello finale corretto dall'uomo.
     * **Specifiche:** Script offline che prende due Excel (AI Output vs Human Final), calcola il delta sui totali e sulle singole righe, e genera un report di accuratezza (%).
