@@ -23,6 +23,10 @@ Questo documento descrive le regole e le convenzioni seguite nel codebase per ga
 -   **Trace ID:** Il sistema implementa un `trace_id` per correlare tutte le operazioni di una singola esecuzione. L'ID viene gestito in modo context-aware tramite `ContextVar` e può essere passato come argomento `--trace-id` alla CLI.
 -   **Tracciamento delle Performance:** Il decoratore `@track_phase` viene utilizzato per misurare la durata di funzioni critiche, emettendo log `PHASE_START` e `PHASE_END` e una metrica di durata.
 
+## Principi di Collaborazione e Proposta (AI Assistant)
+
+-   **Considerazione dei Limiti Tecnici:** L'AI Assistant si impegna a considerare e esplicitare sempre i limiti tecnici delle soluzioni proposte nelle implementazioni (es. limiti API, numero massimo di richieste, dimensioni massime di input, ecc.).
+
 ## Struttura delle Directory
 
 La struttura della directory `src/` segue una logica basata sull'architettura a strati.

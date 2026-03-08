@@ -16,7 +16,7 @@ Il progetto segue i principi della **Clean Architecture** e del **Domain-Driven 
 * **Linguaggio:** Python 3.10+
 * **Database:** SQLite 3 (scelto per portabilità e velocità in-process).
 * **Vector Engine:** `sqlite-vec` (estensione per ricerca vettoriale locale ad alte prestazioni).
-* **AI Models:** OpenAI `text-embedding-3-small` (Embedding) e `gpt-4o` (Vision/Reasoning).
+* **AI Models:** OpenAI `text-embedding-3-small` (Embedding), `gpt-5.1` (Vision/Reasoning per Digitizer e AI Judge), `gpt-5-nano` (Ragionamento per Normalizer fallback).
 * **Data Processing:** Pandas (ETL Excel), Pydantic (Validazione Dati).
 * **Interface:** CLI (Command Line Interface) nativa.
 
@@ -51,12 +51,25 @@ Il sistema offre 4 strumenti principali. Ecco come funzionano "sotto il cofano".
 4.  **BOM Wiring:** Collega automaticamente Padri e Figli nel database relazionale.
 
 ### 2. Digitizer & Normalizer (`digitize`)
-*Trasforma la carta in dati.*
+*Trasforma la carta in dati e la interpreta semanticamente.*
 
-**Input:** PDF (anche scansionati), Immagini (PNG/JPG) di computi metrici.
-**Il Processo:**
-1.  **Vision AI:** Usa GPT-4o Vision per "vedere" il documento come un umano, riconoscendo tabelle, descrizioni tecniche e quantità anche in layout complessi.
-2.  **Normalizzazione:** Converte tutto in un formato JSON standardizzato (`quote_request.json`) che separa chiaramente le righe di computo dalle note legali.
+**Input:** PDF (anche scansionati), Immagini (PNG/JPG) di computi metrici o file Excel/CSV (anche non standard).
+**Il Processo (Ottimizzato):**
+1.  **Digitalizzazione Visiva Potenziata (GPT-5.1 Vision):**
+    *   Converte il PDF/immagine in input in una serie di immagini con **DPI configurabile** (tramite `VISION_IMAGE_DPI` in `src/config.py`), garantendo una migliore qualità visiva per l'AI.
+    *   Utilizza la **Vision AI (`gpt-5.1`)** con un processo a due fasi:
+        *   **Fase Master:** Analizza un chunk iniziale di pagine per **identificare la struttura del documento**: `raw_headers` (intestazioni visive), `header_row_index` (riga dell'header), `column_mapping` (mappatura semantica delle colonne), `pattern_type` (tipo di layout del computo metrico), e regole di estrazione/pulizia. Questo output di metadati è garantito conforme a uno schema Pydantic (`NormalizationConfig`) grazie a `structured_output` dell'API.
+        *   **Fase Worker:** Processa le pagine rimanenti in parallelo per estrarre i dati tabellari, sfruttando la struttura identificata dalla fase Master per una **segmentazione rigorosa e accurata delle colonne**.
+    *   Produce un file **XLSX temporaneo** contenente i dati tabellari grezzi estratti e i metadati strutturali.
+2.  **Normalizzazione Intelligente:**
+    *   Il `Normalizer` (`SemanticNormalizerV3`) riceve il file XLSX temporaneo.
+    *   **Efficienza AI:** Se i metadati strutturali sono stati pre-calcolati dalla Vision AI (nella fase precedente per PDF/immagini), il `Normalizer` li utilizza direttamente per istanziare il parser corretto e processare il DataFrame. **Questo bypassa la sua analisi AI interna**, riducendo costi e latenza.
+    *   **Fallback Robustezza:** Se l'input è un Excel nativo (e quindi non ci sono metadati pre-calcolati dal Digitizer), il `Normalizer` esegue la sua analisi AI interna (`gpt-5-nano`) per inferire il `pattern_type` e la `column_mapping` dal campione di dati.
+    *   Converte i dati in un formato JSON standardizzato (`quote_request.json`) di oggetti `VoceComputoMetric`.
+-   **Benefici Chiave del Nuovo Approccio:**
+    *   **Qualità e Determinismo Superiori:** L'uso di Vision AI (`gpt-5.1`) con input ad alta risoluzione (DPI configurabile) e `structured_output` garantisce un'estrazione dei dati più precisa e meno soggetta a errori di interpretazione o slittamento delle colonne.
+    *   **Ottimizzazione dei Costi AI:** L'eliminazione delle chiamate AI ridondanti nel `Normalizer` per i flussi digitalizzati da PDF/immagini, e l'uso di modelli più economici come `gpt-5-nano` per il fallback, riduce i costi operativi complessivi.
+    *   **Semplificazione del Debugging:** L'output strutturato e i log dettagliati per ogni fase facilitano l'identificazione e la risoluzione dei problemi, in linea con i principi della Clean Architecture.
 
 ### 3. Quote Engine (`quote`)
 *Il cuore del preventivatore.*

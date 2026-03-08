@@ -1,0 +1,31 @@
+# --- Configurazione per la Valutazione tramite OpenAI Evals API ---
+
+# Modello target per la digitalizzazione e normalizzazione del PDF
+TARGET_MODEL: "gpt-5-mini"
+
+# Percorso della directory contenente i PDF di input
+PDF_INPUT_DIR: "tests/eval/data/pdfs"
+
+# Percorso del file JSONL di ground truth (template locale, verrà modificato con file_id)
+GROUND_TRUTH_TEMPLATE_PATH: "tests/eval/data/eval_dataset.jsonl"
+
+#
+GROUND_TRUTHS_DIR: "tests/eval/data/ground_truths"
+
+# Percorso per salvare i risultati delle valutazioni
+EVAL_RESULTS_DIR: "tests/eval/results"
+
+# --- Prompt per il modello TARGET (gpt-5-mini) che elabora il PDF ---
+# Questo prompt verrà inviato al modello tramite l'Eval Run API.
+# NOTA: L'InputImage del PDF verrà iniettato automaticamente nel content della user message.
+TARGET_MODEL_PROMPT_PATH: "tests/eval/prompts/extraction_prompt.txt"
+
+# --- Configurazione per il Grader LLM-as-a-Judge ---
+# Questo è il prompt per l'LLM-as-a-judge che valuterà l'output del TARGET_MODEL.
+# Il grader confronta `sample.output_text` (output del modello) con `item.correct_label` (ground truth).
+# L'output atteso dal grader è un JSON con un campo 'grade' (PASS/FAIL) e un campo 'feedback'.
+JUDGE_MODEL: "gpt-5-mini" # Un modello più capace per la valutazione
+JUDGE_PROMPT_PATH: "tests/eval/prompts/judge_prompt.txt"
+
+GRADER_LABELS: ["corretto", "incorretto", "parzialmente_corretto"]
+GRADER_PASSING_LABELS: ["corretto", "parzialmente_corretto"]

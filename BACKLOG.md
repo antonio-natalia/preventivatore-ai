@@ -92,6 +92,9 @@ Questa sezione contiene tutte le attività necessarie per la messa in produzione
 ---
 
 ## 🚧 In Corso (WIP)
+- [ ] **[BUG] Migliorare Qualità Estrazione PDF (Digitizer):** La conversione del PDF in XLSX temporaneo produce risultati troppo scadenti (dall'Assistant API) per consentire al Normalizer di individuare l'header di partenza per il parsing e il parser corretto.
+    *   **Obiettivo:** Il Digitizer deve restituire un output XLSX congruo per la successiva analisi da parte del Normalizer.
+    *   **Note:** Valutare se affinare il `PROMPT_DIGITIZER`, esplorare opzioni avanzate di `pdfplumber` nel prompt o considerare l'uso di un modello GPT più performante (es. `gpt-4o`) per questo specifico task.
 
 ---
 

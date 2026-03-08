@@ -43,5 +43,7 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2025.3
 xlrd==2.0.2
+PyMuPDF==1.27.1
 xlsxwriter==3.2.9
 python-json-logger
+pyyaml

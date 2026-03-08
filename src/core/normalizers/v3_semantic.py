@@ -1,11 +1,11 @@
 import pandas as pd
 import json
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 
-from .base import BaseNormalizer, VoceComputoMetric
+from .base import BaseNormalizer, VoceComputoMetric, NormalizationConfig
 from .parsers.pattern_block_total import BlockTotalParser
 from .parsers.pattern_measurement_list import MeasurementListParser
 from .parsers.pattern_hierarchy_sparse import HierarchySparseParser
@@ -15,9 +15,11 @@ dotenv_path = find_dotenv()
 load_dotenv(dotenv_path)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+from src.config import settings
+
 class SemanticNormalizerV3(BaseNormalizer):
     def __init__(self):
-        self.model = "gpt-4o"
+        self.model = settings.NORMALIZER_AI_MODEL # Utilizza il modello configurato
         self.parsers_map = {
             "PATTERN_BLOCK_TOTAL": BlockTotalParser,
             "PATTERN_MEASUREMENT_LIST": MeasurementListParser,
@@ -100,14 +102,15 @@ class SemanticNormalizerV3(BaseNormalizer):
         marker = ai_config.get("row_extraction_rules", {}).get("target_row_marker", {})
         col_name = marker.get("column_name")
         if col_name and isinstance(col_name, str):
-            header_row = [str(x).strip().lower() for x in df.iloc[h_idx].tolist()]
-            clean_target = col_name.strip().lower()
-            for idx, val in enumerate(header_row):
-                if val == clean_target:
-                    marker["column_index"] = idx
-                    break
+            if h_idx < len(df):
+                header_row = [str(x).strip().lower() for x in df.iloc[h_idx].tolist()]
+                clean_target = col_name.strip().lower()
+                for idx, val in enumerate(header_row):
+                    if val == clean_target:
+                        marker["column_index"] = idx
+                        break
 
-    def normalize(self, file_path: str, **kwargs) -> List[VoceComputoMetric]:
+    def normalize(self, file_path: str, precomputed_config: Optional[NormalizationConfig] = None, **kwargs) -> List[VoceComputoMetric]:
         # 1. Gestione Parametri CLI
         scan_mode = kwargs.get("scan_mode", "fast_peek")
         sample_rows = kwargs.get("sample_rows", 50)
@@ -124,8 +127,14 @@ class SemanticNormalizerV3(BaseNormalizer):
             except Exception as e:
                 print(f"❌ Errore file: {e}"); return []
 
-        # 3. Analisi (Senza Retry)
-        ai_config = self._analyze_pattern_with_ai(df, scan_mode, sample_rows)
+        # 3. Analisi (Smart Branching)
+        if precomputed_config:
+            print(f"⏩ [Vision Acceleration] Uso configurazione pre-calcolata da Vision AI.")
+            # Convertiamo l'oggetto Pydantic in dict per compatibilità con il resto del codice legacy
+            ai_config = precomputed_config.model_dump()
+        else:
+            print(f"🧠 [Legacy Analysis] Avvio analisi semantica con GPT-4o-Mini...")
+            ai_config = self._analyze_pattern_with_ai(df, scan_mode, sample_rows)
         
         pattern_type = ai_config.get("pattern_type")
         if not pattern_type or pattern_type not in self.parsers_map:
@@ -135,6 +144,11 @@ class SemanticNormalizerV3(BaseNormalizer):
 
         # 4. Parsing
         h_idx = ai_config.get("header_row_index", 0)
+        
+        # Se usiamo config precalcolata (Vision), h_idx è relativo al table_data estratto,
+        # che è stato salvato nel file Excel partendo dalla riga 0.
+        # Quindi se Vision dice h_idx=0, nell'Excel salvato è effettivamente la riga 0.
+        
         col_map = self._resolve_column_indices(df, h_idx, ai_config.get("column_mapping", {}))
         self._update_marker_index(ai_config, df, h_idx)
         
@@ -146,4 +160,6 @@ class SemanticNormalizerV3(BaseNormalizer):
             return parser.parse(df, h_idx)
         except Exception as e:
             print(f"❌ Errore Parser: {e}")
+            import traceback
+            traceback.print_exc()
             return []

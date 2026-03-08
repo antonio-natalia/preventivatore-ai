@@ -6,7 +6,7 @@ Questo documento descrive lo scopo di business, i flussi utente principali e un 
 
 Il sistema, denominato "Preventivatore AI", ha lo scopo di automatizzare la creazione di preventivi (offerte economiche). L'analisi del codice suggerisce che il sistema è in grado di:
 1.  **Ingerire Dati:** Processare file strutturati (come Excel o XML) che contengono elenchi di materiali o lavorazioni, noti come "Computo Metrico", e popolarne un catalogo interno.
-2.  **Digitalizzare Documenti:** Estrarre dati strutturati da documenti non strutturati come PDF o immagini, trasformandoli in un formato JSON intermedio, pronto per essere preventivato.
+2.  **Digitalizzare Documenti:** Estrarre dati strutturati da documenti non strutturati come PDF o immagini, trasformandoli in un formato JSON intermedio, pronto per essere preventivato. Questa fase ora include un'interpretazione strutturale e semantica avanzata del documento da parte di una Vision AI, producendo metadati strutturati che guidano la successiva normalizzazione.
 3.  **Generare Preventivi:** A partire dai dati estratti, generare un file Excel finale che rappresenta il preventivo, applicando logiche di costing complesse basate sul catalogo e sulle distinte base (Bill of Materials).
 
 ## Flusso Utente MVP (SharePoint - Pull Strategy)
@@ -154,11 +154,29 @@ Le funzionalità utente sono esposte tramite un'interfaccia a riga di comando (C
 ### 2. Digitalizzazione Documento (`digitize`)
 -   **Comando:** `python -m src.interfaces.cli digitize --input <input_file> --output <output_json>`
 -   **Scopo:** Convertire un documento (PDF, immagine, o anche Excel non standard) in un formato JSON strutturato, pronto per la fase di `quote`.
--   **Flusso:**
+-   **Flusso Dettagliato:**
     1.  Il comando riceve un file di input e un percorso di output.
-    2.  Invoca `DigitizationService`.
-    3.  Il servizio processa il file (potenzialmente usando servizi di Vision AI) e scrive il risultato strutturato nel file JSON di output.
-    4.  Il flag `--deep` suggerisce l'esistenza di una modalità di analisi più intensiva.
+    2.  Invoca `DigitizationService` come orchestratore principale.
+    3.  **Input da PDF/Immagine (Fase Vision-First):**
+        *   Il servizio converte il PDF/immagine in una serie di immagini con **DPI configurabile** (`VISION_IMAGE_DPI` in `config.py`) per ottimizzare la qualità dell'input per l'AI.
+        *   Viene attivata la **Vision AI (`gpt-5.1`)** con una strategia a due fasi:
+            *   **Fase Master:** Un chunk iniziale di pagine (es. 5) viene inviato per identificare la **struttura complessiva** del documento (intestazioni delle colonne visive (`raw_headers`), riga dell'header (`header_row_index`), mappatura semantica delle colonne (`column_mapping`), tipo di pattern di parsing (`pattern_type`), regole di estrazione delle righe e pulizia). Questa estrazione di metadati è garantita dal parametro `structured_output` (basato su Pydantic `NormalizationConfig`), che assicura la conformità dello schema.
+            *   **Fase Worker:** Le pagine rimanenti vengono processate in parallelo, guidate dai metadati strutturali e dalla mappatura delle colonne individuati nella fase Master, per estrarre i dati tabellari effettivi con **rigorosa segmentazione delle colonne**.
+        *   L'AI produce un file **XLSX temporaneo** contenente i dati tabellari grezzi estratti, con l'header già nella prima riga, e i **metadati strutturali** in un formato JSON.
+    4.  **Input da Excel/CSV Nativo (Fallback):**
+        *   Se il file di input è già Excel o CSV, la fase di Vision AI viene bypassata.
+        *   Il file viene convertito in XLSX (se necessario).
+    5.  **Normalizzazione:**
+        *   Il servizio invoca `SemanticNormalizerV3`.
+        *   **Accelerazione AI:** Se i metadati strutturali sono stati generati dalla Vision AI (input PDF/immagine), il `Normalizer` li utilizza direttamente, **bypassando la propria chiamata AI** (`_analyze_pattern_with_ai`) per identificare pattern e colonne. Questo riduce costi e latenza.
+        *   **Fallback AI:** Se i metadati non sono disponibili (input Excel nativo), il `Normalizer` esegue la sua analisi AI interna (`gpt-5-nano`) per inferire la struttura.
+        *   I dati vengono trasformati in oggetti `VoceComputoMetric`.
+    6.  Il servizio salva il risultato finale (lista di `VoceComputoMetric` convertita in JSON) nel file JSON di output specificato.
+    7.  Il flag `--deep` è un'opzione per l'analisi del Normalizer.
+-   **Miglioramenti chiave:**
+    *   **Maggiore Determinismo e Accuratezza:** L'uso di `gpt-5.1` Vision con `structured_output` e DPI configurabile migliora drasticamente la precisione nell'estrazione dei layout complessi, riducendo errori di fusione/slittamento delle colonne.
+    *   **Efficienza Costi AI:** L'eliminazione della chiamata AI ridondante nel Normalizer per i flussi PDF/immagine ottimizza i costi operativi.
+    *   **Debug Semplificato:** L'output strutturato e i log dettagliati per ogni fase facilitano l'identificazione dei problemi.
 
 ### 3. Generazione Preventivo (`quote`)
 -   **Comando:** `python -m src.interfaces.cli quote <input_json> <output_excel>`

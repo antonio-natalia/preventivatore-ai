@@ -6,6 +6,7 @@ from src.infrastructure.vision_client import run_digitizer_task
 
 # 2. IMPORTA IL NORMALIZZATORE 
 from src.core.normalizers.v3_semantic import SemanticNormalizerV3
+from src.core.normalizers.base import NormalizationConfig
 
 
 class DigitizationService:
@@ -38,7 +39,7 @@ class DigitizationService:
             print(f"⚠️ Errore conversione: {e}. Uso originale.")
             return input_file
 
-    def process_document(self, input_file_path: str, output_json_path: str, deep_scan: bool = False, sample_rows: int = 0):
+    def process_document(self, input_file_path: str, output_json_path: str, deep_scan: bool = False, sample_rows: int = 500):
         """
         Orchestra il flusso: Input -> (Digitizer Infra) -> Normalizer Core -> JSON
         """
@@ -52,16 +53,28 @@ class DigitizationService:
         # --- FASE 1: DIGITIZER (Se PDF/IMG) ---
         # Se l'input è un PDF/immagine, dobbiamo creare un Excel temporaneo.
         # Lo creiamo nella stessa directory del file JSON di output.
+        
+        structural_metadata = None # Metadata opzionale da Vision AI
+
         if ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff']:
             output_dir = os.path.dirname(output_json_path)
             temp_raw_excel = os.path.join(output_dir, "raw_vision_output.xlsx")
             
-            success = run_digitizer_task(input_file_path, temp_raw_excel)
+            # run_digitizer_task ora ritorna (success, metadata)
+            success, meta_dict = run_digitizer_task(input_file_path, temp_raw_excel)
             
             if not success:
                 print("❌ Fase Digitizer fallita. Interruzione.")
                 return None
             target_xlsx = temp_raw_excel
+            
+            # Convertiamo il dict in oggetto Config se presente
+            if meta_dict:
+                try:
+                    structural_metadata = NormalizationConfig(**meta_dict)
+                    print(f"🧠 Metadati Strutturali acquisiti da Vision: {structural_metadata.pattern_type}")
+                except Exception as e:
+                    print(f"⚠️ Errore parsing metadati Vision: {e}. Procedo con fallback.")
             
         elif ext in ['.csv', '.xls']:
             target_xlsx = self._ensure_xlsx_format(input_file_path)
@@ -76,6 +89,7 @@ class DigitizationService:
             normalizer = SemanticNormalizerV3()
             results = normalizer.normalize(
                 target_xlsx, 
+                precomputed_config=structural_metadata,
                 scan_mode=scan_mode, 
                 sample_rows=sample_rows
             )

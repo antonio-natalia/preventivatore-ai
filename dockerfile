@@ -16,6 +16,7 @@ WORKDIR /app
 # (es. gcc per estensioni C, se necessario). Pulisce la cache apt per ridurre le dimensioni.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia prima solo il requirements.txt per sfruttare la cache dei layer di Docker

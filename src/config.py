@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     SHAREPOINT_CLIENT_SECRET: SecretStr
     SHAREPOINT_SITE_NAME: str # es. "NomeDelSito"
 
+    # --- AI VISION SETTINGS ---
+    VISION_MODEL: str = "gpt-5-mini" # Modello per l'elaborazione Vision
+    VISION_IMAGE_DPI: int = 600 # Risoluzione DPI per la conversione PDF -> immagine
+    VISION_MASTER_CHUNK_SIZE: int = 5 # Numero di pagine per il chunk iniziale Master
+    VISION_WORKER_CHUNK_SIZE: int = 5 # Numero di pagine per i chunk paralleli Worker
+
+    # --- NORMALIZER SETTINGS ---
+    NORMALIZER_AI_MODEL: str = "gpt-5-nano" # Modello per l'AI interna del Normalizer
+
+    # --- AI JUDGE SETTINGS ---
+    AI_JUDGE_MODEL: str = "gpt-4o" # Modello per l'AI Judge nel QuoteService (allineato con tests/eval/configs/eval_gpt_5_mini.yaml)
+
     # --- VECTOR SETTINGS ---
     VECTOR_BATCH_SIZE: int = 200
 
